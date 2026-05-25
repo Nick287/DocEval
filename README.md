@@ -1,46 +1,256 @@
 # doceval
 
-文档 Markdown 抽取质量评估器。
+**文档 Markdown 抽取质量评估器**——给同一张文档图片找 3 个独立读者（**Azure Document Intelligence OCR**、**Gemini-MD**、**GPT-MD**），让它们交叉对账；任何一方都不当 ground truth。意见不一致的 token 再喂给**视觉大模型**（GPT-5 vision）二次仲裁。最终对每个来源给出 `correct / typo / omission / hallucination / ambiguous` 五分类判定。
 
-## 设计思路
+> 用一句话说价值：**用模型治模型**——不需要人工标注，就能定位"OCR 把 `B` 看成 `8` / GPT-MD 漏写了表头 / Gemini 编出了一个原图没有的发票号"这类错误。
 
-把 **OCR / Gemini / GPT** 三个读者放在平等位置，**没有任何一方是 ground truth**。
-每张图都通过下面的流水线得到结论：
+## 两条 Workflow 一览
+
+整个系统由 [Microsoft Agent Framework `Workflow`](https://github.com/microsoft/agent-framework) 编排（用 `@executor` 节点 + fan-out / fan-in / switch-case 拼图），对外暴露**两条工作流**：
+
+| Workflow | 代码 | 输入 | 输出 | 适用场景 |
+|---|---|---|---|---|
+| **Per-image**（单图） | [`build_pipeline_workflow`](src/doceval/pipeline/workflow.py) | `stem: str`（如 `"invoice_42"`） | `ImageEvaluation` | 烟测、DevUI 单步调试 |
+| **Batch**（批量+前置） | [`build_batch_workflow`](src/doceval/pipeline/batch_workflow.py) | `BatchRequest(stems, sources, concurrency)` | `BatchReport` | 全量回归、跨图汇总 |
+
+两条 workflow 共享同一个**交叉验证内核**：
 
 ```
-                     ┌─────────────────────┐
-   source image ───► │  Azure Doc Intel    │──┐
-                     │  (prebuilt-layout)  │  │
-                     └─────────────────────┘  │
-                                              │   ┌────────────────┐
-   markdown sources (gemini / gpt / ...) ────┼──►│  Token Pool    │
-                                              │   │ (统一正则)     │
-                                              └──►└──────┬─────────┘
-                                                         │
-                                              ┌──────────▼────────────┐
-                                              │  Clustering           │
-                                              │  (edit distance ≤ 1)  │
-                                              └──────────┬────────────┘
-                                                         │
-                                              ┌──────────▼────────────┐
-                                              │  Majority-vote        │
-                                              │  canonical per cluster│
-                                              └──────────┬────────────┘
-                                                         │
-                                              ┌──────────▼────────────┐
-                                              │  Verifier Agent       │
-                                              │  (vision, only for    │
-                                              │   singletons + ties)  │
-                                              └──────────┬────────────┘
-                                                         │
-                                              ┌──────────▼────────────┐
-                                              │  Per-source verdict   │
-                                              │  ✓ / typo / omission  │
-                                              │  / hallucination      │
-                                              └───────────────────────┘
+┌───────────────── Cross-verification kernel ─────────────────┐
+│                                                              │
+│   Azure Doc Intelligence ─┐                                  │
+│   (prebuilt-layout, OCR)  │                                  │
+│                           │                                  │
+│   MD/gemini/<stem>.md ────┼──► Token Pool ──► Clustering ──► │
+│   (Gemini 输出的 MD)      │   (统一正则)    (编辑距离 ≤ 1)  │
+│                           │                                  │
+│   MD/gpt/<stem>.md ───────┘                                  │
+│   (GPT 输出的 MD)                                            │
+│                                                              │
+│            ▼                                                 │
+│      Majority vote per cluster                               │
+│      • ≥ 2 sources 同意 → 直接定 canonical                   │
+│      • 仅 1 source 写出 → 暂记 hallucination，进入下一步     │
+│            ▼                                                 │
+│      ┌─────────────────────────────────────┐                 │
+│      │  Vision verifier (GPT-5 vision)    │                 │
+│      │  把可疑 token + 原图发给视觉模型   │                 │
+│      │  → present / absent / ambiguous    │                 │
+│      └─────────────────────────────────────┘                 │
+│            ▼                                                 │
+│   Per-source verdict:                                        │
+│   correct / typo / omission / hallucination / ambiguous      │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-判定结果对**每个来源**（含 OCR 自身）都给出 `correct / typo / omission / hallucination`，所以 Doc Intelligence 自己的字符错读也会被诊断出来，不再冤枉 MD。
+> **三层交叉验证**：① OCR 看像素 + GPT/Gemini 看文档语义→ 多数票合并；② 单源孤立候选→ 视觉模型仲裁；③ 视觉模型平反后，**其他来源**相应地从 `correct` 改判 `omission`，做到对每个读者都公平归因。
+
+---
+
+### Workflow 1 · Per-image — `build_pipeline_workflow`
+
+跑**一张图**，6 个 superstep。DevUI 里渲染出来是这样的：
+
+![Per-image workflow graph](img/workflow02.png)
+
+**输入**
+
+```python
+from doceval.pipeline import build_pipeline_workflow
+wf = build_pipeline_workflow()             # 用 .env 里的配置
+result = await wf.run("invoice_42")        # stem 就是 image/source/<stem>.jpg 的文件名
+```
+
+`stem` 对应磁盘约定：
+
+```
+image/source/invoice_42.jpg          ← 原图（必需）
+MD/gemini/invoice_42.md              ← Gemini 抽取（可选）
+MD/gpt/invoice_42.md                 ← GPT 抽取（可选）
+.cache/ocr/invoice_42.<hash>.json    ← Doc Intel 缓存（自动生成）
+```
+
+**节点图**（`workflow.py` 里 8 个 `@executor`）
+
+```
+                          load_config                       ← step 1：定位原图 + 准备 state
+                              │
+        ┌─────────────────────┼────── fan-out（4 路并行）──────────────┐
+        ▼                     ▼                ▼                       ▼
+ read_doc_intel       read_gemini_md     read_gpt_md          read_extra_sources
+ (Azure OCR call,     (read MD file)     (read MD file)       (read MD/<other>/)
+  cached on disk)
+        │                     │                │                       │
+        └─────────────────── fan-in (list[ReaderOutput]) ───────────────┘
+                              │
+                              ▼
+                       aggregate_hits                         ← step 3：合并所有 token
+                              │
+                              ▼
+                       cluster_and_vote                       ← step 4：聚簇 + 投票
+                              │
+            ┌─────────────────┴────────── switch-case ──────────────┐
+            ▼ Case: 存在 singleton 待验证               Default ▼
+       verify_singletons ──────────────────────────► emit_reports   ← step 6：写文件
+       (vision LLM call,                                   │
+        only when needed)                                  ▼
+                                                    ImageEvaluation
+                                                  (yield_output → 外部)
+```
+
+**输出**
+
+返回 `ImageEvaluation` 对象 + 落盘三类文件：
+
+```
+output/invoice_42/
+├── report.md               # 人读：每个簇 + 各来源 verdict + 视觉模型的中文证据
+├── clusters.json           # 机读：见下方 schema
+└── annotated_<source>.jpg  # 每来源一张，错误位置画色框
+```
+
+`clusters.json` 长这样（**示例数字，非真实数据**）：
+
+```jsonc
+{
+  "stem": "invoice_42",
+  "elapsed_s": 18.7,
+  "verifier_model": "gpt-5-vision-2026-xx-xx",     // 来自 x-ms-served-model
+  "stats": {
+    "ocr":    { "correct": 23, "typo": 1, "omission": 0, "hallucination": 4, "ambiguous": 1 },
+    "gemini": { "correct": 19, "typo": 1, "omission": 4, "hallucination": 1, "ambiguous": 0 },
+    "gpt":    { "correct": 22, "typo": 0, "omission": 2, "hallucination": 0, "ambiguous": 0 }
+  },
+  "clusters": [
+    {
+      "canonical": "INV-2024-9999",
+      "bbox": [120, 88, 310, 116],
+      "sources": ["ocr", "gemini", "gpt"],         // 三家都看到了 → 强 consensus
+      "members": [
+        { "source": "ocr",    "surface": "INV-2024-9999" },
+        { "source": "gemini", "surface": "INV-2024-9999" },
+        { "source": "gpt",    "surface": "INV-2024-9999" }
+      ]
+    },
+    {
+      "canonical": "8867123",
+      "bbox": [205, 410, 312, 438],
+      "sources": ["ocr"],                          // 单源 → 触发视觉验证
+      "vision_verdict": "present",
+      "vision_evidence": "右下方表格第二行可见编号 8867123"
+    }
+  ],
+  "judgements": [
+    { "source": "ocr",    "cluster": "INV-2024-9999", "verdict": "correct" },
+    { "source": "gemini", "cluster": "8867123",       "verdict": "omission",
+      "evidence": "视觉模型确认存在，gemini 未写出" }
+  ]
+}
+```
+
+---
+
+### Workflow 2 · Batch — `build_batch_workflow`
+
+跑**全量 + 自动补数据 + 跨图汇总**，比单图 workflow 多了 **preflight 阶段**——在真正评估之前，并行检查每张图缺什么数据，缺啥补啥。DevUI 渲染效果：
+
+![Batch workflow graph](img/workflow01.png)
+
+**输入**
+
+```python
+from doceval.pipeline import build_batch_workflow
+from doceval.pipeline.batch_workflow import BatchRequest
+
+req = BatchRequest(
+    stems=[],          # 空 = 自动发现所有共享 stem
+    sources=[],        # 空 = 自动发现 MD/ 下所有子目录
+    concurrency=4,     # 同时跑几张图（1–8）
+)
+report = await build_batch_workflow().run(req)
+```
+
+**节点图**
+
+```
+                   BatchRequest
+                        │
+                        ▼
+                    discover                ← 解析 stems × sources 矩阵
+                        │
+                        ▼
+                inspect_prereqs             ← 每张图盘点磁盘：图在不在？OCR 缓存有没有？MD/gpt 有没有？
+                        │
+        ┌───────────────┼──────────── conditional edges（可并行）──┐
+        ▼ any_needs_ocr ▼ any_needs_gpt                Default ▼
+  ensure_ocr          ensure_gpt                       (nothing_needed)
+  (批量调 Doc Intel    (批量调 GPT 生成
+   prebuilt-layout)    MD/gpt/<stem>.md)
+        │               │                                │
+        └───────────── aggregate_preflight ◄─────────────┘   ← 幂等屏障，等齐再发
+                        │
+                        ▼
+                     run_all                ← semaphore(concurrency) 并行调
+                        │                     build_pipeline_workflow 跑每个 ready stem
+                        ▼
+                    summarize               ← write_summary：跨图聚合
+                        │
+                        ▼
+                   BatchReport
+                  (yield_output → 外部)
+```
+
+**输出**
+
+返回 `BatchReport` + 在 `output/` 下生成：
+
+```
+output/
+├── summary.md          # 跨图汇总（顶部含本次实际命中的 verifier 模型版本）
+├── summary.csv         # 同上机读版
+├── invoice_42/         # 每张图的子目录（同 per-image workflow 产物）
+├── waybill_07/
+└── ...
+```
+
+`summary.md` 形如（**示例数字，非真实数据**）：
+
+```markdown
+# 共识评估总结
+
+## 评估配置
+- 视觉验证模型：`gpt-5-vision-2026-xx-xx`
+
+| stem        | clusters | elapsed_s | ocr_命中 | ocr_漏读 | gemini_命中 | gemini_漏读 | gpt_命中 | gpt_漏读 |
+|-------------|---------:|----------:|--------:|--------:|-----------:|-----------:|--------:|--------:|
+| invoice_42  |       42 |      18.7 |      40 |       1 |         36 |          5 |      39 |        2 |
+| waybill_07  |       58 |      22.3 |      55 |       0 |         48 |          8 |      53 |        4 |
+| **合计**    |      100 |      41.0 |      95 |       1 |         84 |         13 |      92 |        6 |
+
+## 各来源累计指标
+| 来源    | 召回率 | 准确率 |
+|---------|------:|------:|
+| ocr     |  96.0% |  88.0% |
+| gemini  |  86.6% |  90.8% |
+| gpt     |  93.9% |  95.2% |
+```
+
+`BatchReport` 字段：
+
+```python
+class BatchReport(BaseModel):
+    stems:            list[str]                # 实际跑成功的 stem
+    sources:          list[str]                # 实际参与的 MD source（含 ocr）
+    summary_md:       str                      # output/summary.md 的绝对路径
+    summary_csv:      str                      # output/summary.csv
+    out_root:         str                      # output/ 根
+    elapsed_seconds:  float
+    evaluation_count: int
+    skipped:          list[SkippedStem] = []   # 没图、reader 报错等被跳过的
+    gemini_missing:   list[str] = []           # 没有 MD/gemini/<stem>.md 的 stem
+```
+
+---
 
 ## 流水线详解
 
