@@ -23,4 +23,9 @@ openai>=1.40
 pytest>=8.0
 pytest-asyncio>=0.23
 ruff>=0.5
-azure-cli
+
+# Note: do NOT add `azure-cli` here. It is a CLI tool, not a library, and its
+# transitive deps (e.g. jsmin 2.2.2 with use_2to3) break on modern Python /
+# setuptools. If you need the `az` command inside the dev container, install
+# it via the `ghcr.io/devcontainers/features/azure-cli` feature in
+# .devcontainer/devcontainer.json instead.

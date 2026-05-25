@@ -9,6 +9,13 @@
 		"context": ".."
 	},
 
+	// Install Azure CLI via the official dev container feature instead of pip.
+	// Installing `azure-cli` from PyPI drags in jsmin 2.2.2, which fails to
+	// build on Python 3.13 / modern setuptools (use_2to3 was removed).
+	"features": {
+		"ghcr.io/devcontainers/features/azure-cli:1": {}
+	},
+
 	// Install the local package (intsig_eval) in editable mode after the
 	// container is built. --no-deps because all third-party deps are already
 	// installed from requirements.txt at image build time.
