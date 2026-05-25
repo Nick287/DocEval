@@ -26,9 +26,12 @@ output/
 *.png
 *.jpg
 *.jpeg
-# (keep diagrams under docs/ if you ever add any: explicitly un-ignore here)
+# (keep diagrams under docs/ and img/: explicitly un-ignore here)
 !docs/**/*.png
 !docs/**/*.jpg
+!img/**/*.png
+!img/**/*.jpg
+!img/**/*.jpeg
 
 # Generated cross-image markdown reports (per-run, not source code).
 summary.md
