@@ -1,0 +1,26 @@
+# Runtime dependencies (pinned ranges mirror pyproject.toml)
+
+# Microsoft Agent Framework (vision-capable chat agent + workflow primitives)
+agent-framework>=1.5.0
+
+# Azure SDKs
+azure-ai-documentintelligence>=1.0.0
+azure-identity>=1.17.0
+azure-core>=1.30.0
+
+# Imaging / rendering
+Pillow>=10.0
+
+# CLI + config
+typer>=0.12
+pydantic>=2.7
+pydantic-settings>=2.3
+
+# OpenAI SDK (Agent Framework uses it under the hood for Azure OpenAI)
+openai>=1.40
+
+# --- dev / test ---------------------------------------------------------
+pytest>=8.0
+pytest-asyncio>=0.23
+ruff>=0.5
+azure-cli

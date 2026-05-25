@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "intsig-eval"
+version = "0.1.0"
+description = "Document Markdown extraction quality evaluator: OCR + multi-source consensus + vision verifier (Microsoft Agent Framework)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "intsig-eval" }]
+
+dependencies = [
+    # Microsoft Agent Framework (vision-capable chat agent + workflow primitives)
+    "agent-framework>=1.5.0",
+    # Azure SDKs
+    "azure-ai-documentintelligence>=1.0.0",
+    "azure-identity>=1.17.0",
+    "azure-core>=1.30.0",
+    # Imaging / rendering
+    "Pillow>=10.0",
+    # CLI + config
+    "typer>=0.12",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    # OpenAI SDK (Agent Framework uses it under the hood for Azure OpenAI)
+    "openai>=1.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[project.scripts]
+intsig-eval = "intsig_eval.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/intsig_eval"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

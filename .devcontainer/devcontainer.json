@@ -1,0 +1,30 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+{
+	"name": "doc-eval",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"build": {
+		// Path is relative to the devcontainer.json file.
+		"dockerfile": "Dockerfile",
+		"context": ".."
+	},
+
+	// Install the local package (intsig_eval) in editable mode after the
+	// container is built. --no-deps because all third-party deps are already
+	// installed from requirements.txt at image build time.
+	"postCreateCommand": "pip install -e . --no-deps",
+
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"GitHub.copilot",
+				"GitHub.copilot-chat",
+				"ms-azuretools.vscode-docker",
+				"ms-azuretools.vscode-azureresourcegroups",
+				"charliermarsh.ruff"
+			]
+		}
+	}
+}
