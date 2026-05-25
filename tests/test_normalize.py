@@ -1,6 +1,6 @@
 import pytest
 
-from intsig_eval.core.normalize import edit_distance, normalize
+from doceval.core.normalize import edit_distance, normalize
 
 
 @pytest.mark.parametrize(

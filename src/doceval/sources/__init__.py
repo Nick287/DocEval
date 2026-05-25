@@ -1,6 +1,6 @@
-from intsig_eval.sources.base import TokenReader, discover_stems
-from intsig_eval.sources.markdown import MarkdownReader
-from intsig_eval.sources.ocr import AzureLayoutOCRReader
+from doceval.sources.base import TokenReader, discover_stems
+from doceval.sources.markdown import MarkdownReader
+from doceval.sources.ocr import AzureLayoutOCRReader
 
 __all__ = [
     "AzureLayoutOCRReader",

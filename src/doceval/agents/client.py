@@ -15,13 +15,13 @@ Note on ``api_version``:
     fails with ``BadRequest / API version not supported``.
 
     The plain ``AsyncAzureOpenAI`` client used by
-    :mod:`intsig_eval.sources.gpt_md_generator` hits the **legacy** Responses
+    :mod:`doceval.sources.gpt_md_generator` hits the **legacy** Responses
     path ``/openai/responses`` instead and requires the opposite — a dated
     version like ``2025-04-01-preview`` (the literal ``"preview"`` returns
     ``404 Resource not found`` there).
 
     To keep both clients happy we leave the dated value in
-    :class:`~intsig_eval.config.Settings.azure_openai_api_version` for the
+    :class:`~doceval.config.Settings.azure_openai_api_version` for the
     legacy path, and pin the Responses v1 client to ``preview`` here.
 """
 from __future__ import annotations
@@ -31,7 +31,7 @@ from functools import lru_cache
 from agent_framework.openai import OpenAIChatClient
 from azure.identity import AzureCliCredential
 
-from intsig_eval.config import get_settings
+from doceval.config import get_settings
 
 
 @lru_cache(maxsize=1)

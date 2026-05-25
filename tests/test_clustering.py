@@ -1,5 +1,5 @@
-from intsig_eval.consensus.clustering import build_clusters
-from intsig_eval.core import TokenHit
+from doceval.consensus.clustering import build_clusters
+from doceval.core import TokenHit
 
 
 def _hit(source: str, norm: str) -> TokenHit:

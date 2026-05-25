@@ -1,14 +1,14 @@
-from intsig_eval.pipeline.batch_workflow import (
+from doceval.pipeline.batch_workflow import (
     BatchRequest,
     BatchReport,
     build_batch_workflow,
 )
-from intsig_eval.pipeline.evaluator import (
+from doceval.pipeline.evaluator import (
     Evaluator,
     build_default_evaluator,
     evaluate_many,
 )
-from intsig_eval.pipeline.workflow import (
+from doceval.pipeline.workflow import (
     PipelineState,
     build_pipeline_workflow,
     list_available_sources,

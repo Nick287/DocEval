@@ -1,6 +1,6 @@
 import pytest
 
-from intsig_eval.core.tokens import iter_token_matches, strip_markdown
+from doceval.core.tokens import iter_token_matches, strip_markdown
 
 
 def _surfaces(text: str, *, relaxed: bool = False) -> set[str]:

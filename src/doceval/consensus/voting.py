@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from intsig_eval.core import (
+from doceval.core import (
     Cluster,
     SourceJudgement,
     SourceName,

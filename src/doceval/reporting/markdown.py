@@ -6,7 +6,7 @@ from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
-from intsig_eval.core import Cluster, ImageEvaluation, SourceJudgement, Verdict
+from doceval.core import Cluster, ImageEvaluation, SourceJudgement, Verdict
 
 
 def _verdict_counts(judgements: list[SourceJudgement]) -> dict[str, dict[str, int]]:

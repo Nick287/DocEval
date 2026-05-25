@@ -16,14 +16,14 @@ from typing import Any
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
 
-from intsig_eval.config import get_settings
-from intsig_eval.core import (
+from doceval.config import get_settings
+from doceval.core import (
     BBox,
     TokenHit,
     iter_token_matches,
     normalize,
 )
-from intsig_eval.sources.base import TokenReader
+from doceval.sources.base import TokenReader
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ class AzureLayoutOCRReader(TokenReader):
             s = get_settings()
             if not s.di_key:
                 raise RuntimeError(
-                    "INTSIG_EVAL_DI_KEY is not set; cannot call Document Intelligence."
+                    "DOCEVAL_DI_KEY is not set; cannot call Document Intelligence."
                 )
             self._client = DocumentIntelligenceClient(
                 endpoint=s.di_endpoint,

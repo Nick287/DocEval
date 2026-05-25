@@ -1,9 +1,9 @@
-"""Batch wrapper around the per-stem :mod:`intsig_eval.pipeline.workflow`.
+"""Batch wrapper around the per-stem :mod:`doceval.pipeline.workflow`.
 
 One ``workflow.run(BatchRequest(...))`` = process **all** stems in one shot,
 write the aggregated ``summary.md`` / ``summary.csv``, and yield a single
-:class:`BatchReport`. This mirrors what ``intsig-eval run`` does in
-:mod:`intsig_eval.cli`, but exposes it as a DevUI entity so you can kick off
+:class:`BatchReport`. This mirrors what ``doceval run`` does in
+:mod:`doceval.cli`, but exposes it as a DevUI entity so you can kick off
 the whole batch from the browser instead of a shell loop.
 
 Graph::
@@ -52,19 +52,19 @@ from typing import Any
 from agent_framework import Workflow, WorkflowBuilder, WorkflowContext, executor
 from pydantic import BaseModel, Field
 
-from intsig_eval.agents import VisionVerifierAgent
-from intsig_eval.config import Settings, get_settings
-from intsig_eval.core import ImageEvaluation
-from intsig_eval.pipeline.workflow import build_pipeline_workflow
-from intsig_eval.reporting import write_summary
-from intsig_eval.sources import AzureLayoutOCRReader, MarkdownReader, discover_stems
-from intsig_eval.sources.gpt_md_generator import ensure_gpt_markdown
+from doceval.agents import VisionVerifierAgent
+from doceval.config import Settings, get_settings
+from doceval.core import ImageEvaluation
+from doceval.pipeline.workflow import build_pipeline_workflow
+from doceval.reporting import write_summary
+from doceval.sources import AzureLayoutOCRReader, MarkdownReader, discover_stems
+from doceval.sources.gpt_md_generator import ensure_gpt_markdown
 
-log = logging.getLogger("intsig_eval.batch")
+log = logging.getLogger("doceval.batch")
 
 
 class BatchRequest(BaseModel):
-	"""Input form for one batch run — mirrors ``intsig-eval run`` defaults."""
+	"""Input form for one batch run — mirrors ``doceval run`` defaults."""
 
 	stems: list[str] = Field(
 		default_factory=list,

@@ -12,8 +12,8 @@ from pathlib import Path
 
 from agent_framework import Agent, Content, Message
 
-from intsig_eval.agents.client import build_chat_client
-from intsig_eval.config import get_settings
+from doceval.agents.client import build_chat_client
+from doceval.config import get_settings
 
 
 _MEDIA = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
@@ -61,7 +61,7 @@ class VisionVerifierAgent:
         s = get_settings()
         self._agent = agent or Agent(
             client=build_chat_client(),
-            name="intsig-vision-verifier",
+            name="doceval-vision-verifier",
             instructions=_INSTRUCTIONS,
         )
         self.configured_model: str = s.azure_openai_deployment

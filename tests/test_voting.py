@@ -1,6 +1,6 @@
-from intsig_eval.consensus.clustering import build_clusters
-from intsig_eval.consensus.voting import apply_vision_verdict, vote
-from intsig_eval.core import BBox, TokenHit
+from doceval.consensus.clustering import build_clusters
+from doceval.consensus.voting import apply_vision_verdict, vote
+from doceval.core import BBox, TokenHit
 
 
 def _hit(

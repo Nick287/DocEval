@@ -1,13 +1,13 @@
-"""Launch the Agent Framework DevUI for the intsig_eval pipeline.
+"""Launch the Agent Framework DevUI for the doceval pipeline.
 
 Usage::
 
-    cd /workspaces/Agent/intsig_eval
+    cd /workspaces/Agent/doceval
     python devui_app.py
     # → opens http://127.0.0.1:8088 in your browser
 
 What you'll see in DevUI:
-    * The workflow is registered with one entity named ``intsig_eval_pipeline``.
+    * The workflow is registered with one entity named ``doceval_pipeline``.
     * The input box is auto-generated from the first executor's signature
       (``load_config`` takes ``str``), so just type a stem like ``11_mosaic``
       and press *Run*.
@@ -39,10 +39,10 @@ if SRC.exists() and str(SRC) not in sys.path:
 
 from agent_framework.devui import serve  # noqa: E402
 
-from intsig_eval.agents import VisionVerifierAgent  # noqa: E402
-from intsig_eval.config import get_settings  # noqa: E402
-from intsig_eval.pipeline.batch_workflow import build_batch_workflow  # noqa: E402
-from intsig_eval.pipeline.workflow import build_pipeline_workflow  # noqa: E402
+from doceval.agents import VisionVerifierAgent  # noqa: E402
+from doceval.config import get_settings  # noqa: E402
+from doceval.pipeline.batch_workflow import build_batch_workflow  # noqa: E402
+from doceval.pipeline.workflow import build_pipeline_workflow  # noqa: E402
 
 
 def main() -> None:
@@ -74,16 +74,16 @@ def main() -> None:
         settings=settings,
         verifier=verifier,
     )
-    setattr(per_stem_workflow, "name", "intsig_eval_per_stem")
-    setattr(per_stem_workflow, "id", "intsig_eval_per_stem")
+    setattr(per_stem_workflow, "name", "doceval_per_stem")
+    setattr(per_stem_workflow, "id", "doceval_per_stem")
 
     # Batch workflow — one run = process all stems + write summary.
     batch_workflow = build_batch_workflow(
         settings=settings,
         verifier=verifier,
     )
-    setattr(batch_workflow, "name", "intsig_eval_batch")
-    setattr(batch_workflow, "id", "intsig_eval_batch")
+    setattr(batch_workflow, "name", "doceval_batch")
+    setattr(batch_workflow, "id", "doceval_batch")
 
     md_root = settings.md_root
     available_md = (
@@ -93,7 +93,7 @@ def main() -> None:
     )
     print()
     print("=" * 72)
-    print(" intsig_eval — Agent Framework DevUI")
+    print(" doceval — Agent Framework DevUI")
     print("=" * 72)
     print(f"  verifier  : {'OFF (--no-verify)' if verifier is None else 'ON'}")
     print(f"  md_root   : {md_root}  (sources: {available_md or '<none>'})")
@@ -101,10 +101,10 @@ def main() -> None:
     print(f"  url       : http://{args.host}:{args.port}")
     print()
     print("  Two entities are registered in the sidebar:")
-    print("    • intsig_eval_batch     — one run = all stems + summary.md")
+    print("    • doceval_batch     — one run = all stems + summary.md")
     print("                              (form: stems, sources, concurrency;")
     print("                               leave fields empty to auto-discover)")
-    print("    • intsig_eval_per_stem  — type one stem string, see the full")
+    print("    • doceval_per_stem  — type one stem string, see the full")
     print("                              fan-out/fan-in/switch-case graph")
     print("=" * 72)
     print()

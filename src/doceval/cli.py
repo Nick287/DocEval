@@ -1,4 +1,4 @@
-"""Typer-based CLI: ``intsig-eval run [--stem ...] [--no-verify]``."""
+"""Typer-based CLI: ``doceval run [--stem ...] [--no-verify]``."""
 from __future__ import annotations
 
 import asyncio
@@ -7,14 +7,14 @@ from pathlib import Path
 
 import typer
 
-from intsig_eval.agents import VisionVerifierAgent
-from intsig_eval.config import get_settings
-from intsig_eval.pipeline import list_available_sources, run_workflow_many
-from intsig_eval.reporting import write_summary
-from intsig_eval.sources import AzureLayoutOCRReader, MarkdownReader, discover_stems
+from doceval.agents import VisionVerifierAgent
+from doceval.config import get_settings
+from doceval.pipeline import list_available_sources, run_workflow_many
+from doceval.reporting import write_summary
+from doceval.sources import AzureLayoutOCRReader, MarkdownReader, discover_stems
 
-app = typer.Typer(add_completion=False, help="Intsig MD verification — consensus pipeline.")
-log = logging.getLogger("intsig_eval")
+app = typer.Typer(add_completion=False, help="DocEval MD verification — consensus pipeline.")
+log = logging.getLogger("doceval")
 
 
 @app.command()
@@ -102,7 +102,7 @@ def ocr(
     stem: str = typer.Argument(..., help="Image stem (without extension)."),
 ) -> None:
     """Run OCR for one image and dump tokens it found (no LLM)."""
-    from intsig_eval.sources import AzureLayoutOCRReader
+    from doceval.sources import AzureLayoutOCRReader
 
     reader = AzureLayoutOCRReader()
     hits = reader.read(stem)

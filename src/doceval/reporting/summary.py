@@ -4,7 +4,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from intsig_eval.core import ImageEvaluation, Verdict
+from doceval.core import ImageEvaluation, Verdict
 
 _VERDICTS: list[Verdict] = ["correct", "typo", "omission", "hallucination", "ambiguous"]
 _VERDICT_ZH = {

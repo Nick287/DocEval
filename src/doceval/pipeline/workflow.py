@@ -52,19 +52,19 @@ from agent_framework import (
     executor,
 )
 
-from intsig_eval.agents import VisionVerifierAgent
-from intsig_eval.config import Settings, get_settings
-from intsig_eval.consensus import apply_vision_verdict, build_clusters, vote
-from intsig_eval.core import (
+from doceval.agents import VisionVerifierAgent
+from doceval.config import Settings, get_settings
+from doceval.consensus import apply_vision_verdict, build_clusters, vote
+from doceval.core import (
     Cluster,
     ImageEvaluation,
     SourceJudgement,
     SourceName,
     TokenHit,
 )
-from intsig_eval.sources import AzureLayoutOCRReader, MarkdownReader
+from doceval.sources import AzureLayoutOCRReader, MarkdownReader
 
-log = logging.getLogger("intsig_eval.workflow")
+log = logging.getLogger("doceval.workflow")
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +331,7 @@ def build_pipeline_workflow(
     # [6] emit_reports — write disk + yield workflow output
     # ------------------------------------------------------------------
     # Import here to avoid a circular import at module load time
-    from intsig_eval.reporting import annotate, write_clusters_json, write_report
+    from doceval.reporting import annotate, write_clusters_json, write_report
 
     @executor(id="emit_reports", workflow_output=ImageEvaluation)
     async def emit_reports(

@@ -3,13 +3,13 @@ requires = ["hatchling>=1.21"]
 build-backend = "hatchling.build"
 
 [project]
-name = "intsig-eval"
+name = "doceval"
 version = "0.1.0"
 description = "Document Markdown extraction quality evaluator: OCR + multi-source consensus + vision verifier (Microsoft Agent Framework)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "intsig-eval" }]
+authors = [{ name = "doceval" }]
 
 dependencies = [
     # Microsoft Agent Framework (vision-capable chat agent + workflow primitives)
@@ -32,10 +32,10 @@ dependencies = [
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
 
 [project.scripts]
-intsig-eval = "intsig_eval.cli:app"
+doceval = "doceval.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/intsig_eval"]
+packages = ["src/doceval"]
 
 [tool.ruff]
 line-length = 110

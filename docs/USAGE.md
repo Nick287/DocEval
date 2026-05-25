@@ -1,6 +1,6 @@
-# intsig-eval — 调用方式与参数手册
+# doceval — 调用方式与参数手册
 
-本文档详细说明 `intsig-eval` 的安装、配置、命令行参数与产物结构。
+本文档详细说明 `doceval` 的安装、配置、命令行参数与产物结构。
 快速入门请看仓库根目录的 [README.md](../README.md)。
 
 ---
@@ -38,13 +38,13 @@ az account set --subscription <your-sub-id>
 
 > ⚠️ **不要** 把 API key 写进配置 — 这个项目刻意没有 `api_key` 通道，统一走 AAD。
 
-Document Intelligence 仍使用 key，写在 `.env` 的 `INTSIG_EVAL_DI_KEY` 中。
+Document Intelligence 仍使用 key，写在 `.env` 的 `DOCEVAL_DI_KEY` 中。
 
 ---
 
 ## 3. 环境变量 / `.env`
 
-所有配置变量都带前缀 `INTSIG_EVAL_`，由 [config.py](../src/intsig_eval/config.py) 中的 `Settings` 类加载（基于 `pydantic-settings`）。
+所有配置变量都带前缀 `DOCEVAL_`，由 [config.py](../src/doceval/config.py) 中的 `Settings` 类加载（基于 `pydantic-settings`）。
 
 复制模板：
 
@@ -54,22 +54,22 @@ cp .env.example .env
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `INTSIG_EVAL_AZURE_OPENAI_ENDPOINT` | `https://bowan-mk974k0g-swedencentral.services.ai.azure.com/` | Azure OpenAI 资源端点 |
-| `INTSIG_EVAL_AZURE_OPENAI_DEPLOYMENT` | `gpt-5.4` | **部署名（deployment alias）**，不是模型名 |
-| `INTSIG_EVAL_AZURE_OPENAI_API_VERSION` | `2025-04-01-preview` | Responses API 版本；当前 Agent Framework 默认会自动用 `preview` |
-| `INTSIG_EVAL_DI_ENDPOINT` | `https://bofoundry.cognitiveservices.azure.com/` | Document Intelligence 端点 |
-| `INTSIG_EVAL_DI_KEY` | _空_ | Document Intelligence 密钥（必填） |
-| `INTSIG_EVAL_DATA_ROOT` | 当前工作目录 | 数据根目录；`image/`、`MD/`、`output/`、`.cache/` 均相对于此 |
-| `INTSIG_EVAL_OUTPUT_DIR` | `output` | 产物输出目录（相对 `DATA_ROOT`） |
-| `INTSIG_EVAL_CLUSTER_EDIT_DISTANCE` | `1` | 编辑距离 ≤ 该值的 token 会归到同一簇 |
-| `INTSIG_EVAL_MIN_TOKEN_LENGTH` | `3` | 归一化后短于该长度的 token 丢弃 |
-| `INTSIG_EVAL_VERIFY_SINGLETONS` | `true` | 是否把孤立簇送给视觉 Agent 仲裁 |
+| `DOCEVAL_AZURE_OPENAI_ENDPOINT` | `https://bowan-mk974k0g-swedencentral.services.ai.azure.com/` | Azure OpenAI 资源端点 |
+| `DOCEVAL_AZURE_OPENAI_DEPLOYMENT` | `gpt-5.4` | **部署名（deployment alias）**，不是模型名 |
+| `DOCEVAL_AZURE_OPENAI_API_VERSION` | `2025-04-01-preview` | Responses API 版本；当前 Agent Framework 默认会自动用 `preview` |
+| `DOCEVAL_DI_ENDPOINT` | `https://bofoundry.cognitiveservices.azure.com/` | Document Intelligence 端点 |
+| `DOCEVAL_DI_KEY` | _空_ | Document Intelligence 密钥（必填） |
+| `DOCEVAL_DATA_ROOT` | 当前工作目录 | 数据根目录；`image/`、`MD/`、`output/`、`.cache/` 均相对于此 |
+| `DOCEVAL_OUTPUT_DIR` | `output` | 产物输出目录（相对 `DATA_ROOT`） |
+| `DOCEVAL_CLUSTER_EDIT_DISTANCE` | `1` | 编辑距离 ≤ 该值的 token 会归到同一簇 |
+| `DOCEVAL_MIN_TOKEN_LENGTH` | `3` | 归一化后短于该长度的 token 丢弃 |
+| `DOCEVAL_VERIFY_SINGLETONS` | `true` | 是否把孤立簇送给视觉 Agent 仲裁 |
 
 ---
 
 ## 4. 数据布局
 
-`intsig-eval` 严格按文件名 stem 匹配输入。**任何来源缺失对应 stem 都会被跳过。**
+`doceval` 严格按文件名 stem 匹配输入。**任何来源缺失对应 stem 都会被跳过。**
 
 ```
 <DATA_ROOT>/
@@ -96,14 +96,14 @@ cp .env.example .env
 
 ## 5. 命令行参考
 
-入口由 [pyproject.toml](../pyproject.toml) 注册为 `intsig-eval`，对应 [`src/intsig_eval/cli.py`](../src/intsig_eval/cli.py)。
+入口由 [pyproject.toml](../pyproject.toml) 注册为 `doceval`，对应 [`src/doceval/cli.py`](../src/doceval/cli.py)。
 
-### 5.1 `intsig-eval run`
+### 5.1 `doceval run`
 
 跑一次完整的共识评估（OCR + 所有 MD 来源 + 视觉验证）。
 
 ```
-intsig-eval run [OPTIONS]
+doceval run [OPTIONS]
 ```
 
 | 参数 | 简写 | 类型 | 默认 | 说明 |
@@ -118,19 +118,19 @@ intsig-eval run [OPTIONS]
 
 ```bash
 # 烟测：只跑一张
-intsig-eval run -s 11_mosaic
+doceval run -s 11_mosaic
 
 # 节省成本：关闭 LLM 验证
-intsig-eval run --no-verify
+doceval run --no-verify
 
 # 只比较 gemini 与 gpt（忽略其它来源）
-intsig-eval run --source gemini --source gpt
+doceval run --source gemini --source gpt
 
 # 并发跑 4 张
-intsig-eval run -c 4
+doceval run -c 4
 
 # 多 stem + 调试日志
-intsig-eval run -s 11_mosaic -s BOL1 --log-level DEBUG
+doceval run -s 11_mosaic -s BOL1 --log-level DEBUG
 ```
 
 #### 退出码
@@ -138,12 +138,12 @@ intsig-eval run -s 11_mosaic -s BOL1 --log-level DEBUG
 - `0` — 成功
 - `1` — 找不到任何跨来源共有的 stem
 
-### 5.2 `intsig-eval ocr <stem>`
+### 5.2 `doceval ocr <stem>`
 
 仅运行 Document Intelligence layout，把识别到的 token（规范化结果 + 原 surface + bbox）打印出来。**不调用 LLM**，用于排查 OCR 自身的读字错误。
 
 ```bash
-intsig-eval ocr 11_mosaic
+doceval ocr 11_mosaic
 ```
 
 ---
@@ -214,11 +214,11 @@ output/
 
 | 目标 | 命令 |
 |---|---|
-| 第一次跑通环境 | `intsig-eval run -s 11_mosaic --log-level DEBUG` |
-| 全量评估 | `intsig-eval run -c 4` |
-| 只看某来源差异 | `intsig-eval run --source gemini --source gpt` |
-| 离线快速回归 | `intsig-eval run --no-verify` |
-| 排查 OCR 错读 | `intsig-eval ocr <stem>` |
+| 第一次跑通环境 | `doceval run -s 11_mosaic --log-level DEBUG` |
+| 全量评估 | `doceval run -c 4` |
+| 只看某来源差异 | `doceval run --source gemini --source gpt` |
+| 离线快速回归 | `doceval run --no-verify` |
+| 排查 OCR 错读 | `doceval ocr <stem>` |
 | 复现某次结果 | 检查 `clusters.json` 的 `verifier_model` 字段，固定到同一部署 + 同一服务端版本 |
 
 ---
@@ -241,9 +241,9 @@ output/
 
 ```python
 import asyncio
-from intsig_eval.pipeline import build_default_evaluator, evaluate_many
-from intsig_eval.reporting import write_clusters_json, write_report, write_summary
-from intsig_eval.config import get_settings
+from doceval.pipeline import build_default_evaluator, evaluate_many
+from doceval.reporting import write_clusters_json, write_report, write_summary
+from doceval.config import get_settings
 
 settings = get_settings()
 evaluator = build_default_evaluator(enable_verifier=True)

@@ -16,7 +16,7 @@
 		"ghcr.io/devcontainers/features/azure-cli:1": {}
 	},
 
-	// Install the local package (intsig_eval) in editable mode after the
+	// Install the local package (doceval) in editable mode after the
 	// container is built. --no-deps because all third-party deps are already
 	// installed from requirements.txt at image build time.
 	"postCreateCommand": "pip install -e . --no-deps",

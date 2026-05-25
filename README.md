@@ -1,4 +1,4 @@
-# intsig-eval
+# doceval
 
 文档 Markdown 抽取质量评估器。
 
@@ -44,7 +44,7 @@
 
 ## 流水线详解
 
-> **整条 pipeline 用 [Microsoft Agent Framework `Workflow`](https://github.com/microsoft/agent-framework) 编排** — 实际代码在 [src/intsig_eval/pipeline/workflow.py](src/intsig_eval/pipeline/workflow.py)。8 个 `@executor` 节点通过 3 种 edge 模式组装：
+> **整条 pipeline 用 [Microsoft Agent Framework `Workflow`](https://github.com/microsoft/agent-framework) 编排** — 实际代码在 [src/doceval/pipeline/workflow.py](src/doceval/pipeline/workflow.py)。8 个 `@executor` 节点通过 3 种 edge 模式组装：
 >
 > - **Fan-out** (`add_fan_out_edges`)：`load_config` 把状态广播给 4 个 reader，**Azure OCR 调用（~秒级）和 3 个本地 MD 读取（~毫秒）并行**，不再串行累加。
 > - **Fan-in** (`add_fan_in_edges`)：`aggregate_hits` 等待 4 个 reader 全部返回，合并它们的 `ReaderOutput`。
@@ -105,8 +105,8 @@ return (
 
 四个 reader 在**同一个 superstep** 内并行执行；每个**只读** state（不会去改它，避免竞态），各自产出一个 `ReaderOutput(source_names, hits)`：
 
-- **`read_doc_intel`**（[`sources/ocr.py`](src/intsig_eval/sources/ocr.py)）：调 Azure Document Intelligence `prebuilt-layout`，抽 OCR token。带 `.cache/ocr/<stem>.json` 缓存，第二次跑同一张图不会再发 HTTP。
-- **`read_gemini_md`**（[`sources/markdown.py`](src/intsig_eval/sources/markdown.py)）：判断 `MD/gemini/<stem>.md` 是否存在；存在就用同一份正则 ([`core/tokens.py`](src/intsig_eval/core/tokens.py)) 抽 token，否则 emit 空 `ReaderOutput`。
+- **`read_doc_intel`**（[`sources/ocr.py`](src/doceval/sources/ocr.py)）：调 Azure Document Intelligence `prebuilt-layout`，抽 OCR token。带 `.cache/ocr/<stem>.json` 缓存，第二次跑同一张图不会再发 HTTP。
+- **`read_gemini_md`**（[`sources/markdown.py`](src/doceval/sources/markdown.py)）：判断 `MD/gemini/<stem>.md` 是否存在；存在就用同一份正则 ([`core/tokens.py`](src/doceval/core/tokens.py)) 抽 token，否则 emit 空 `ReaderOutput`。
 - **`read_gpt_md`**：对 `MD/gpt/<stem>.md` 做相同处理。
 - **`read_extra_sources`**：`MD/` 下除 `gemini`/`gpt` 之外的其它子目录（`gpt5_rot`、`claude` …），一并产出。
 
@@ -129,9 +129,9 @@ return (
 
 ### 步骤 4 · cluster_and_vote — `consensus/`
 
-把 `state.hits` 按"**归一化后编辑距离 ≤ 1**"合并成簇（[`clustering.py`](src/intsig_eval/consensus/clustering.py)），归一化（`core/normalize.py`）会去空格、统一大小写、把 `O→0 / l→1 / S→5`（仅当与数字混排时），所以 `1234567`、`1234567 ` 和 `l234567` 会落进同一簇。阈值由 `INTSIG_EVAL_CLUSTER_EDIT_DISTANCE` 控制，默认 `1`。
+把 `state.hits` 按"**归一化后编辑距离 ≤ 1**"合并成簇（[`clustering.py`](src/doceval/consensus/clustering.py)），归一化（`core/normalize.py`）会去空格、统一大小写、把 `O→0 / l→1 / S→5`（仅当与数字混排时），所以 `1234567`、`1234567 ` 和 `l234567` 会落进同一簇。阈值由 `DOCEVAL_CLUSTER_EDIT_DISTANCE` 控制，默认 `1`。
 
-然后投票 ([`voting.py`](src/intsig_eval/consensus/voting.py))：
+然后投票 ([`voting.py`](src/doceval/consensus/voting.py))：
 
 1. **一来源一票**（同来源即使写了两次同样的值也只算一票）。
 2. 平票时优先 OCR 的形式（它看的是像素而不是文本），其次取更长的、再其次按字典序。
@@ -179,7 +179,7 @@ def has_singletons_to_verify(message):
 
 ```bash
 # A) 默认 INFO 级别就会打印每一步 + framework 的 superstep 边界：
-python -m intsig_eval run -s 11_mosaic
+python -m doceval run -s 11_mosaic
 #   step 1 · load_config DONE  image=11_mosaic.jpg available_md=['gemini', 'gpt'] (fan-out → 4 readers)
 #   Starting superstep 1
 #   step 2a · read_doc_intel START (Azure call)
@@ -199,7 +199,7 @@ python -m intsig_eval run -s 11_mosaic
 #   step 6 · emit_reports DONE  16.3s → output/11_mosaic/
 
 # A') --no-verify 会让 switch-case 走 Default 分支：step 5 完全不出现
-python -m intsig_eval run -s 11_mosaic --no-verify
+python -m doceval run -s 11_mosaic --no-verify
 #   Starting superstep 4
 #   step 6 · emit_reports DONE  0.2s → output/11_mosaic/   ← 直接跳到 step 6
 
@@ -212,12 +212,12 @@ print(dict(c))   # 例如 {'ocr': 19, 'gemini': 16, 'gpt': 12}
 "
 
 # C) Doc Intel 单步抽取（不走整条 workflow）：
-python -m intsig_eval ocr 11_mosaic | head
+python -m doceval ocr 11_mosaic | head
 ```
 
 ## 批量评估 — `pipeline/batch_workflow.py`
 
-CLI 的 `intsig-eval run`（不带 `-s`）会在 Python 里手写一个 `asyncio.gather` 跑完所有 stem。如果想要**同样一条「全量评估」用 Agent Framework 的图来表达** —— 用来在 DevUI 里点一下按钮就跑全量、或者让 preflight 自动补齐缺失的 `MD/gpt/*.md` —— 就走 [`batch_workflow.py`](src/intsig_eval/pipeline/batch_workflow.py)。
+CLI 的 `doceval run`（不带 `-s`）会在 Python 里手写一个 `asyncio.gather` 跑完所有 stem。如果想要**同样一条「全量评估」用 Agent Framework 的图来表达** —— 用来在 DevUI 里点一下按钮就跑全量、或者让 preflight 自动补齐缺失的 `MD/gpt/*.md` —— 就走 [`batch_workflow.py`](src/doceval/pipeline/batch_workflow.py)。
 
 ```
               BatchRequest(stems=[], sources=[], concurrency=4)
@@ -260,39 +260,38 @@ CLI 的 `intsig-eval run`（不带 `-s`）会在 Python 里手写一个 `asyncio
 
 ### DevUI — `python devui_app.py`
 
-[`devui_app.py`](src/intsig_eval/devui_app.py) 把上面两个 workflow 同时注册到 Agent Framework DevUI 的侧栏：
+[`devui_app.py`](src/doceval/devui_app.py) 把上面两个 workflow 同时注册到 Agent Framework DevUI 的侧栏：
 
 | 侧栏条目 | 输入 | 用途 |
 |---|---|---|
-| **`intsig_eval_batch`** | `BatchRequest`（`stems` / `sources` 留空 = 全量自动发现，`concurrency` 默认 4） | 一次跑完所有 stem + 生成 `summary.{md,csv}`，preflight 节点会实时显示进度 |
-| **`intsig_eval_per_stem`** | 一个 stem 字符串，例如 `11_mosaic` | 调一张图，看完整的 fan-out / fan-in / switch-case 图 |
+| **`doceval_batch`** | `BatchRequest`（`stems` / `sources` 留空 = 全量自动发现，`concurrency` 默认 4） | 一次跑完所有 stem + 生成 `summary.{md,csv}`，preflight 节点会实时显示进度 |
+| **`doceval_per_stem`** | 一个 stem 字符串，例如 `11_mosaic` | 调一张图，看完整的 fan-out / fan-in / switch-case 图 |
 
 ```bash
-cd /workspaces/Agent/intsig_eval
-python devui_app.py                  # 打开 http://127.0.0.1:8088
-python devui_app.py --no-verify      # 视觉验证关闭（per-stem 总是走 Default 分支）
-python devui_app.py --port 9000      # 换端口
+python -m doceval.devui_app          # 打开 http://127.0.0.1:8088
+python -m doceval.devui_app --no-verify   # 视觉验证关闭（per-stem 总是走 Default 分支）
+python -m doceval.devui_app --port 9000   # 换端口
 ```
 
 DevUI 是 web UI，能：
 
 - 实时看到每个 superstep 的边界与每个节点的 START/DONE 事件
-- 在表单里改 `BatchRequest.concurrency`、限定 `stems`/`sources` 后点 Run，等价于 `intsig-eval run -c N --stem ... --source ...`
+- 在表单里改 `BatchRequest.concurrency`、限定 `stems`/`sources` 后点 Run，等价于 `doceval run -c N --stem ... --source ...`
 - 在 trace 视图里看到 `ctx.send_message` 与对 Azure OpenAI 的 HTTP 调用
 
-> CLI 跑全量等价于直接 `intsig-eval run -c 4`；区别在于 CLI **不会自动生成 `MD/gpt/*.md`**，因为它没有 preflight 阶段。需要 GPT 自动补齐的场景请走 DevUI 的 `intsig_eval_batch`，或者手动调 [`sources/gpt_md_generator.py`](src/intsig_eval/sources/gpt_md_generator.py) 的 `ensure_gpt_markdown(image_path, out_path)`。
+> CLI 跑全量等价于直接 `doceval run -c 4`；区别在于 CLI **不会自动生成 `MD/gpt/*.md`**，因为它没有 preflight 阶段。需要 GPT 自动补齐的场景请走 DevUI 的 `doceval_batch`，或者手动调 [`sources/gpt_md_generator.py`](src/doceval/sources/gpt_md_generator.py) 的 `ensure_gpt_markdown(image_path, out_path)`。
 
 ## 项目结构
 
 ```
-intsig_eval/
+doceval/
 ├── pyproject.toml
 ├── README.md
 ├── .env.example
-├── src/intsig_eval/
-│   ├── __main__.py             # 让 `python -m intsig_eval ...` 可用
+├── src/doceval/
+│   ├── __main__.py             # 让 `python -m doceval ...` 可用
 │   ├── config.py               # pydantic-settings 全局配置（.env 覆盖）
-│   ├── cli.py                  # typer CLI 入口（`intsig-eval run / ocr`）
+│   ├── cli.py                  # typer CLI 入口（`doceval run / ocr`）
 │   ├── devui_app.py            # 启动 Agent Framework DevUI（浏览器调试）
 │   ├── core/                   # 纯逻辑（无外部依赖）
 │   │   ├── tokens.py           # 唯一一份 token 正则
@@ -330,7 +329,7 @@ intsig_eval/
 ## 输入约定
 
 ```
-intsig_eval/
+doceval/
 ├── image/source/<stem>.jpg
 └── MD/<source_name>/<stem>.md
 ```
@@ -353,31 +352,31 @@ az login              # 视觉验证 Agent 走 AAD，不接受 API key
 
 ```bash
 # ① pip install 后注册的 entry point（推荐）
-intsig-eval run -s 11_mosaic
+doceval run -s 11_mosaic
 
-# ② 用 -m 调包（已有 src/intsig_eval/__main__.py）—— 不依赖 entry point
-python -m intsig_eval run -s 11_mosaic
+# ② 用 -m 调包（已有 src/doceval/__main__.py）—— 不依赖 entry point
+python -m doceval run -s 11_mosaic
 
 # ③ 直接跑脚本（cli.py 末尾有 `if __name__ == "__main__": app()`）
-python src/intsig_eval/cli.py run -s 11_mosaic
+python src/doceval/cli.py run -s 11_mosaic
 
 # ④ Agent Framework DevUI — 浏览器里点按钮跑（per-stem + batch 都有）
 python devui_app.py        # 默认 http://127.0.0.1:8088
 ```
 
-> 如果 `intsig-eval: command not found`（exit 127），说明 entry point 没装上，改用 ② 或 ③ 即可。
+> 如果 `doceval: command not found`（exit 127），说明 entry point 没装上，改用 ② 或 ③ 即可。
 
 ### 常用调用
 
 ```bash
-intsig-eval run                          # 全量评估（所有共有 stem）
-intsig-eval run -s 11_mosaic             # 只跑一张（烟测）
-intsig-eval run -s 11_mosaic -s BOL1     # 多张，可重复 -s
-intsig-eval run --source gemini --source gpt   # 只对比指定 MD 来源
-intsig-eval run --no-verify              # 跳过 LLM 视觉验证（更快、更便宜）
-intsig-eval run -c 4                     # 并发 4 张
-intsig-eval run -s 11_mosaic --log-level DEBUG  # 看每个 reader 的进度
-intsig-eval ocr 11_mosaic                # 仅跑 Doc Intelligence 并打印 token
+doceval run                          # 全量评估（所有共有 stem）
+doceval run -s 11_mosaic             # 只跑一张（烟测）
+doceval run -s 11_mosaic -s BOL1     # 多张，可重复 -s
+doceval run --source gemini --source gpt   # 只对比指定 MD 来源
+doceval run --no-verify              # 跳过 LLM 视觉验证（更快、更便宜）
+doceval run -c 4                     # 并发 4 张
+doceval run -s 11_mosaic --log-level DEBUG  # 看每个 reader 的进度
+doceval ocr 11_mosaic                # 仅跑 Doc Intelligence 并打印 token
 ```
 
 ### 一次正常运行你应该看到什么
@@ -402,7 +401,7 @@ step 6 · emit_reports DONE  17.4s → output/11_mosaic/
 summary → output/summary.md
 ```
 
-每条 `step N · …` 都是 [workflow.py](src/intsig_eval/pipeline/workflow.py) 里对应 executor 的日志。中间穿插的 `httpx POST` 是**步骤 5**对 Azure OpenAI 的唯一一次调用；OCR（步骤 2a）首次跑也会有一条 Document Intelligence 的 HTTP 行，命中 `.cache/ocr/` 之后就没了。
+每条 `step N · …` 都是 [workflow.py](src/doceval/pipeline/workflow.py) 里对应 executor 的日志。中间穿插的 `httpx POST` 是**步骤 5**对 Azure OpenAI 的唯一一次调用；OCR（步骤 2a）首次跑也会有一条 Document Intelligence 的 HTTP 行，命中 `.cache/ocr/` 之后就没了。
 
 ### 命令行参数速查
 

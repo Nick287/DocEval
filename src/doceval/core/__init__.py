@@ -1,13 +1,13 @@
 """Pure logic. No I/O, no Azure, no Agent Framework — easy to unit test."""
-from intsig_eval.core.normalize import edit_distance, normalize
-from intsig_eval.core.tokens import (
+from doceval.core.normalize import edit_distance, normalize
+from doceval.core.tokens import (
     PATTERNS,
     PATTERNS_RELAXED,
     TokenMatch,
     iter_token_matches,
     strip_markdown,
 )
-from intsig_eval.core.types import (
+from doceval.core.types import (
     BBox,
     Cluster,
     ImageEvaluation,

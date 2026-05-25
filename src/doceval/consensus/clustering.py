@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from intsig_eval.core import Cluster, TokenHit, edit_distance
+from doceval.core import Cluster, TokenHit, edit_distance
 
 
 class _UnionFind:
@@ -39,7 +39,7 @@ def build_clusters(hits: list[TokenHit], *, max_distance: int = 1) -> list[Clust
     """Group hits by ``norm`` proximity. Returns clusters sorted by canonical_norm.
 
     Canonicalization (canonical_norm / canonical_surface / bbox) is **not** done
-    here — see :mod:`intsig_eval.consensus.voting`. We only handle membership.
+    here — see :mod:`doceval.consensus.voting`. We only handle membership.
     """
     if not hits:
         return []

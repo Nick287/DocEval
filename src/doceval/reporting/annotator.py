@@ -5,8 +5,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from intsig_eval.core import BBox, ImageEvaluation, SourceJudgement, Verdict
-from intsig_eval.utils import load_font
+from doceval.core import BBox, ImageEvaluation, SourceJudgement, Verdict
+from doceval.utils import load_font
 
 
 # (border RGB, label background RGBA)

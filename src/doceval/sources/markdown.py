@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from intsig_eval.core import TokenHit, iter_token_matches, normalize, strip_markdown
-from intsig_eval.sources.base import TokenReader
+from doceval.core import TokenHit, iter_token_matches, normalize, strip_markdown
+from doceval.sources.base import TokenReader
 
 
 class MarkdownReader(TokenReader):

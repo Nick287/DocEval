@@ -1,7 +1,7 @@
 """GPT vision → Markdown transcription generator.
 
 Ports the single-image conversion logic from ``annot_test/image_to_markdown.py``
-into the :mod:`intsig_eval` package so the batch workflow can synthesize a
+into the :mod:`doceval` package so the batch workflow can synthesize a
 missing ``MD/gpt/<stem>.md`` on demand.
 """
 from __future__ import annotations
@@ -18,9 +18,9 @@ from azure.identity import AzureCliCredential, get_bearer_token_provider
 from openai import AsyncAzureOpenAI
 from PIL import Image
 
-from intsig_eval.config import get_settings
+from doceval.config import get_settings
 
-log = logging.getLogger("intsig_eval.gpt_md")
+log = logging.getLogger("doceval.gpt_md")
 
 
 _SYSTEM_PROMPT = (
@@ -71,7 +71,7 @@ _MEDIA_MAP = {
 @lru_cache(maxsize=1)
 def _shared_credential() -> AzureCliCredential:
 	# Pin to the tenant that owns the Azure OpenAI resource — see
-	# :mod:`intsig_eval.agents.client` for the full rationale.
+	# :mod:`doceval.agents.client` for the full rationale.
 	return AzureCliCredential(tenant_id=get_settings().azure_tenant_id)
 
 

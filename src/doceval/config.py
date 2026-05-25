@@ -9,12 +9,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     """Runtime configuration. All values can be overridden by env vars
-    prefixed with ``INTSIG_EVAL_`` (see ``.env.example``)."""
+    prefixed with ``DOCEVAL_`` (see ``.env.example``)."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        env_prefix="INTSIG_EVAL_",
+        env_prefix="DOCEVAL_",
         extra="ignore",
     )
 

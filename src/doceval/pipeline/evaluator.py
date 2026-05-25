@@ -10,17 +10,17 @@ import asyncio
 import time
 from pathlib import Path
 
-from intsig_eval.agents import VisionVerifierAgent
-from intsig_eval.config import get_settings
-from intsig_eval.consensus import apply_vision_verdict, build_clusters, vote
-from intsig_eval.core import (
+from doceval.agents import VisionVerifierAgent
+from doceval.config import get_settings
+from doceval.consensus import apply_vision_verdict, build_clusters, vote
+from doceval.core import (
     Cluster,
     ImageEvaluation,
     SourceJudgement,
     SourceName,
     TokenHit,
 )
-from intsig_eval.sources import AzureLayoutOCRReader, MarkdownReader, TokenReader
+from doceval.sources import AzureLayoutOCRReader, MarkdownReader, TokenReader
 
 
 class Evaluator:

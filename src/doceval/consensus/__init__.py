@@ -1,5 +1,5 @@
-from intsig_eval.consensus.clustering import build_clusters
-from intsig_eval.consensus.voting import (
+from doceval.consensus.clustering import build_clusters
+from doceval.consensus.voting import (
     apply_vision_verdict,
     finalize_cluster,
     judge_cluster,
