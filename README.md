@@ -252,6 +252,167 @@ class BatchReport(BaseModel):
 
 ---
 
+## 交叉验证逻辑详解
+
+整套交叉验证 kernel 由四个阶段串成。代码在 [src/doceval/consensus/clustering.py](src/doceval/consensus/clustering.py)、[src/doceval/consensus/voting.py](src/doceval/consensus/voting.py)、[src/doceval/reporting/summary.py](src/doceval/reporting/summary.py)，加上 [src/doceval/agents](src/doceval/agents) 里的 vision verifier。
+
+### 流程串起来
+
+```mermaid
+flowchart TD
+    A[原图<br/>image/source/*.jpg] --> B1[OCR 来源<br/>Azure Document Intelligence]
+    A --> B2[GPT/Gemini 来源<br/>Vision LLM → Markdown]
+
+    B1 --> C[抽 token<br/>TokenHit 列表]
+    B2 --> C
+
+    C --> D[聚类 Clustering<br/>Union-Find + edit_distance ≤ 1<br/>把指同一个东西的 hit 拢一起]
+
+    D --> E[投票 Voting<br/>① 选 canonical norm 一源一票<br/>② 每个来源对每个 cluster 出 verdict]
+
+    E --> F{cluster 是<br/>singleton?<br/>只有 1 个来源看见}
+    F -- 是 --> G[暂判 hallucination 幻觉<br/>送 Vision Verifier]
+    F -- 否 --> H[verdict 已最终化<br/>correct / typo / omission]
+
+    G --> I[Vision Verifier Agent<br/>LLM + 原图核对]
+    I -- present --> J[升级为 correct]
+    I -- ambiguous --> K[改为 ambiguous]
+    I -- absent --> L[保留 hallucination]
+
+    H --> M[累计指标<br/>每来源 命中/漏读/看错/幻觉/不明确]
+    J --> M
+    K --> M
+    L --> M
+
+    M --> N[summary.md<br/>召回率 = correct/truth<br/>准确率 = correct/seen]
+```
+
+### 1. 抽 token：每来源各自变成 `TokenHit` 列表
+
+每个来源（`ocr` / `gemini` / `gpt-5.4` / `gpt-5.5` / ...）把自己的输出切成 token，每个 token 带：
+
+- `surface`：原样字符串
+- `norm`：标准化后的字符串（大小写、空格、标点统一化）
+- `source`：来源名
+- `bbox`：仅 OCR 有
+
+这一步还没有任何对比，纯抽取。
+
+### 2. 聚类 Clustering：把"指的是同一个东西"的 hit 拢到一个 cluster
+
+[`build_clusters`](src/doceval/consensus/clustering.py) 用 Union-Find，对所有 hit 的 `norm` 两两比较：
+
+- 同 `norm` → 同一 cluster
+- 不同 `norm` 但 **`edit_distance ≤ max_distance`（默认 1）** → 合并
+- **限制**：只跨来源合并（同来源内的两个相近 norm 视为不同实体，避免把同来源里两张不同的发票号合成一个）
+
+产出：一组 `Cluster`，每个 cluster 里有 1..N 个来源的若干 hit。
+
+### 3. 投票 Voting：定 canonical + 给每个来源判定 verdict
+
+[`vote`](src/doceval/consensus/voting.py) 对每个 cluster：
+
+**3a. 选 canonical 形（`_pick_canonical_norm`）**
+
+- 一来源一票（同来源里 norm 出现两次仍只算 1 票），统计每种 norm 的票数
+- 票数最多者获胜
+- 平票 tiebreak：① OCR 见过的优先 ② 较长者 ③ 字典序
+
+**3b. 给每个来源出 verdict（`judge_cluster`）**
+
+| 情况 | verdict | 中文 |
+|---|---|---|
+| 该来源 hit 的 norm == canonical | `correct` | 命中 |
+| 该来源 hit 的 norm 与 canonical 编辑距离 ≤ 1 | `typo` | 看错 |
+| 该来源**没看到**，但 cluster 里 ≥ 2 来源都看到 | `omission` | 漏读 |
+| 整个 cluster **只有 1 个来源**看见 → 暂判 | `hallucination` | 幻觉 |
+
+> ⚠️ **重要**：第 4 条是为什么"加一个来源会改变其它来源数字"——单源 cluster 是否产生取决于「其它来源是否也见过」。新加一个来源进来，原本某来源单独看见的 token 可能升级成"两个来源都看见"，于是从 `hallucination` → `correct`。
+
+### 4. Vision Verifier：救济 singleton
+
+[`VisionVerifierAgent`](src/doceval/agents/) 把所有 `hallucination` 的 surface 喂给 LLM + 原图：
+
+- `present` → `apply_vision_verdict(visible=True)` → 升级为 `correct`
+- `ambiguous` → 改为 `ambiguous`（不明确）
+- `absent` → 保持 `hallucination`
+
+这一步是为了减轻"一个来源独自正确"被错判幻觉。
+
+### 5. 累计指标公式
+
+[reporting/summary.py](src/doceval/reporting/summary.py) 里：
+
+```text
+seen   = correct + typo + hallucination + ambiguous   ← 该来源实际写出多少个 token
+truth  = correct + omission + typo                    ← 共识里应该有、该来源有机会写的 token
+
+召回率 recall    = correct / truth     "应该写的，有几个我写对了"   ← 衡量覆盖度
+准确率 precision = correct / seen      "我写出的，有几个是对的"     ← 衡量少胡说
+```
+
+注意 `ambiguous` 算进**分母 seen** 但不进 omission/typo——所以它只压准确率不影响召回。`hallucination` 同理。
+
+### 专业词速查
+
+**数据结构**
+
+| 词 | 含义 |
+|---|---|
+| **token** | 切出来的一小段字符串（一个词/一个数字/一个标点单元） |
+| **TokenHit** | 一次"某来源在某位置读到了某 token"的事件，带 surface/norm/source/bbox |
+| **surface** | token 的原样写法，比如 `"INV-001"` |
+| **norm**（normalized form） | 标准化后的写法，去掉大小写、空格、标点差异，比如 `"inv001"`。**所有比较都用 norm** |
+| **bbox**（bounding box） | 在原图上的方框坐标 `(x, y, w, h)`，只有 OCR 提供 |
+| **cluster** | 一组被认为"指同一个东西"的 hit 的集合，可能来自多个来源 |
+| **canonical norm** | 这个 cluster 投票选出来的"标准答案 norm" |
+| **canonical surface** | 报告里展示用的标准写法（优先用 OCR 的） |
+| **singleton cluster** | 只有 **1 个来源**看见的 cluster |
+| **judgement / verdict** | 对"某来源在某 cluster 上的表现"的判定 |
+
+**算法概念**
+
+| 词 | 含义 | 在这里用来干嘛 |
+|---|---|---|
+| **edit distance**（编辑距离 / Levenshtein 距离） | 把字符串 A 改成 B 需要的最少"插入/删除/替换"次数 | 判断两个 norm 是否近似到要合并：`"5478"` ↔ `"5479"` 距离 = 1，合并；`"abc"` ↔ `"xyz"` 距离 = 3，不合并 |
+| **Union-Find / 并查集** | 一种数据结构，能高效维护"哪些元素属于同一组" | 把所有近似的 norm 合并到同一个 cluster |
+| **一源一票（source-weighted vote）** | 同一个来源在一个 cluster 里就算一票，不管它写了多少次 | 防止一个啰嗦的来源霸占投票 |
+| **tiebreak** | 平票时怎么决出胜负 | OCR 优先 → 较长串优先 → 字典序 |
+
+**verdict 五种判定**
+
+| 英文 | 中文 | 触发条件 |
+|---|---|---|
+| `correct` | 命中 | 来源的 norm == cluster 的 canonical norm |
+| `typo` | 看错 | 来源的 norm 跟 canonical 不一样，但编辑距离 ≤ 1（写错一个字符那种） |
+| `omission` | 漏读 | 该来源**完全没看到**这个 cluster，且 ≥ 2 个其它来源都看到了 |
+| `hallucination` | 幻觉 | 整个 cluster 只有这 1 个来源看见，初判它"凭空捏造" |
+| `ambiguous` | 不明确 | Vision Verifier 看了原图后说"看不清是不是真的有" |
+
+**指标含义**
+
+| 概念 | 通俗解释 |
+|---|---|
+| **recall（召回率）** | 漏没漏。100% 意味着该有的全有 |
+| **precision（准确率）** | 错没错。100% 意味着写出来的全对 |
+| 二者**通常此消彼长** | 想多写 → 召回↑准确↓；想保守 → 准确↑召回↓ |
+
+**系统角色**
+
+| 词 | 含义 |
+|---|---|
+| **consensus / 共识** | 多个来源投票出来的"真相"——**不是人工标注**，所以本身有噪声 |
+| **vision verifier** | 一个独立的 LLM agent，专门用来"复审 singleton"，避免把"独立读对的"冤判成幻觉 |
+| **rotation optimisation** | `gpt_md_generator` 同时喂原图 + 90° 旋转图两张，希望模型能把横排和竖排都读出来 |
+
+### 一句话总结
+
+> 每个来源把图变成一堆 **TokenHit** → 用 **edit_distance + Union-Find** 把"指同一个东西"的 hit 聚成 **cluster** → 每个 cluster **一源一票**选出 **canonical norm** → 给每个来源打 **verdict**（命中/看错/漏读/幻觉/不明确）→ singleton 送 **vision verifier** 二次核对 → 按 `correct / truth` 算**召回**、`correct / seen` 算**准确**。
+>
+> 这里的"真相"是投票出来的，所以**改任何一个来源都会扰动所有来源的分数**——加一个来源进 `MD_SOURCES` 会重组 cluster 边界、改变 singleton 判定，从而连带影响其它来源的命中/幻觉计数。
+
+---
+
 ## 流水线详解
 
 > **整条 pipeline 用 [Microsoft Agent Framework `Workflow`](https://github.com/microsoft/agent-framework) 编排** — 实际代码在 [src/doceval/pipeline/workflow.py](src/doceval/pipeline/workflow.py)。8 个 `@executor` 节点通过 3 种 edge 模式组装：
