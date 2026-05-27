@@ -1,4 +1,9 @@
-from doceval.agents.client import build_chat_client
+from doceval.agents.llm import VisionImage, VisionResult, vision_responses
 from doceval.agents.verifier import VisionVerifierAgent
 
-__all__ = ["VisionVerifierAgent", "build_chat_client"]
+__all__ = [
+    "VisionImage",
+    "VisionResult",
+    "VisionVerifierAgent",
+    "vision_responses",
+]

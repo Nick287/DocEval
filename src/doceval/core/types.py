@@ -16,7 +16,7 @@ BBox = tuple[float, float, float, float]
 """Normalized axis-aligned bounding box ``(x0, y0, x1, y1)``, each in [0, 1]."""
 
 SourceName = str
-"""Free-form source identifier — e.g. ``"ocr"``, ``"gemini"``, ``"gpt"``."""
+"""Free-form source identifier — e.g. ``"di"``, ``"gemini"``, ``"gpt-5.4"``."""
 
 Verdict = Literal["correct", "typo", "omission", "hallucination", "ambiguous"]
 """Per-source verdict against a cluster's canonical form."""

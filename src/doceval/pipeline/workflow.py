@@ -62,7 +62,7 @@ from doceval.core import (
     SourceName,
     TokenHit,
 )
-from doceval.sources import AzureLayoutOCRReader, MarkdownReader
+from doceval.sources import AzureDocIntelReader, MarkdownReader
 
 log = logging.getLogger("doceval.workflow")
 
@@ -127,14 +127,10 @@ def build_pipeline_workflow(
     """
     s = settings or get_settings()
     out_root = out_root or s.out_root
-    discovered = (
-        [p.name for p in s.md_root.iterdir() if p.is_dir()]
-        if s.md_root.exists()
-        else []
-    )
-    md_sources = sources if sources is not None else sorted(discovered)
+    discovered = s.list_md_sources()
+    md_sources = sources if sources is not None else discovered
 
-    ocr_reader = AzureLayoutOCRReader(name="ocr")
+    di_reader = AzureDocIntelReader(name="di")
     md_readers: dict[str, MarkdownReader] = {
         name: MarkdownReader(name=name, root=s.md_root / name) for name in md_sources
     }
@@ -147,7 +143,7 @@ def build_pipeline_workflow(
         stem: str, ctx: WorkflowContext[PipelineState]
     ) -> None:
         log.info("step 1 · load_config START stem=%s", stem)
-        image_path = ocr_reader.find_image(stem)
+        image_path = di_reader.find_image(stem)
         if image_path is None:
             raise FileNotFoundError(f"image for stem {stem!r} not found")
 
@@ -175,10 +171,10 @@ def build_pipeline_workflow(
         state: PipelineState, ctx: WorkflowContext[ReaderOutput]
     ) -> None:
         log.info("step 2a · read_doc_intel START (Azure call)")
-        hits = ocr_reader.read(state.stem)
+        hits = di_reader.read(state.stem)
         log.info("step 2a · read_doc_intel DONE  +%d hits", len(hits))
-        # OCR is always considered "present" so vote() can use it as anchor.
-        await ctx.send_message(ReaderOutput(source_names=["ocr"], hits=hits))
+        # DI is always considered "present" so vote() can use it as anchor.
+        await ctx.send_message(ReaderOutput(source_names=["di"], hits=hits))
 
     @executor(id="read_gemini_md")
     async def read_gemini_md(
@@ -202,19 +198,20 @@ def build_pipeline_workflow(
     async def read_gpt_md(
         state: PipelineState, ctx: WorkflowContext[ReaderOutput]
     ) -> None:
-        reader = md_readers.get("gpt")
-        path = (s.md_root / "gpt" / f"{state.stem}.md") if reader else None
+        gpt_name = s.model_name
+        reader = md_readers.get(gpt_name)
+        path = (s.gpt_md_dir / f"{state.stem}.md") if reader else None
         if reader and path and path.exists():
             hits = reader.read(state.stem)
             log.info("step 2c · read_gpt_md HIT   +%d hits", len(hits))
             await ctx.send_message(
-                ReaderOutput(source_names=["gpt"], hits=hits)
+                ReaderOutput(source_names=[gpt_name], hits=hits)
             )
         else:
-            log.info("step 2c · read_gpt_md SKIP (no MD/gpt/%s.md)", state.stem)
+            log.info("step 2c · read_gpt_md SKIP (no MD/%s/%s.md)", gpt_name, state.stem)
             await ctx.send_message(ReaderOutput())
 
-    extra_names = [n for n in md_sources if n not in ("gemini", "gpt")]
+    extra_names = [n for n in md_sources if n not in ("gemini", s.model_name)]
 
     @executor(id="read_extra_sources")
     async def read_extra_sources(
@@ -276,7 +273,7 @@ def build_pipeline_workflow(
         )
         clusters = build_clusters(state.hits, max_distance=s.cluster_edit_distance)
         clusters, judgements = vote(
-            clusters, state.sources_present, ocr_source="ocr"
+            clusters, state.sources_present, di_source="di"
         )
         state.clusters = clusters
         state.judgements = judgements
@@ -452,6 +449,4 @@ async def run_workflow_many(
 def list_available_sources(settings: Settings | None = None) -> list[str]:
     """Return the MD source directory names that exist under ``MD/``."""
     s = settings or get_settings()
-    if not s.md_root.exists():
-        return []
-    return sorted(p.name for p in s.md_root.iterdir() if p.is_dir())
+    return s.list_md_sources()

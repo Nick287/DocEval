@@ -20,21 +20,21 @@ from doceval.core import (
     SourceName,
     TokenHit,
 )
-from doceval.sources import AzureLayoutOCRReader, MarkdownReader, TokenReader
+from doceval.sources import AzureDocIntelReader, MarkdownReader, TokenReader
 
 
 class Evaluator:
-    """Run the OCR + multi-source consensus pipeline for one stem at a time."""
+    """Run the DI + multi-source consensus pipeline for one stem at a time."""
 
     def __init__(
         self,
-        ocr_reader: AzureLayoutOCRReader,
+        di_reader: AzureDocIntelReader,
         markdown_readers: list[MarkdownReader],
         verifier: VisionVerifierAgent | None = None,
         *,
         max_cluster_distance: int = 1,
     ) -> None:
-        self.ocr_reader = ocr_reader
+        self.di_reader = di_reader
         self.markdown_readers = markdown_readers
         self.verifier = verifier
         self.max_cluster_distance = max_cluster_distance
@@ -42,17 +42,17 @@ class Evaluator:
     # ------------------------------------------------------------------
     @property
     def all_sources(self) -> list[SourceName]:
-        return [self.ocr_reader.name] + [r.name for r in self.markdown_readers]
+        return [self.di_reader.name] + [r.name for r in self.markdown_readers]
 
     @property
     def readers(self) -> list[TokenReader]:
-        return [self.ocr_reader, *self.markdown_readers]
+        return [self.di_reader, *self.markdown_readers]
 
     # ------------------------------------------------------------------
     async def evaluate(self, stem: str) -> ImageEvaluation:
         """Evaluate one image; the optional verifier runs concurrently per stem."""
         t0 = time.time()
-        image_path = self.ocr_reader.find_image(stem)
+        image_path = self.di_reader.find_image(stem)
         if image_path is None:
             raise FileNotFoundError(f"image for stem {stem!r} not found")
 
@@ -64,7 +64,7 @@ class Evaluator:
         # --- 2. Cluster + vote -------------------------------------------
         clusters = build_clusters(hits, max_distance=self.max_cluster_distance)
         clusters, judgements = vote(
-            clusters, self.all_sources, ocr_source=self.ocr_reader.name
+            clusters, self.all_sources, di_source=self.di_reader.name
         )
 
         # --- 3. Vision verify singletons --------------------------------
@@ -123,7 +123,7 @@ def build_default_evaluator(
     """Build an evaluator wired up to whatever sources exist under ``MD/``.
 
     If ``sources`` is None, all subdirectories of ``MD/`` are picked up
-    automatically. Pass ``sources=["gemini", "gpt"]`` to constrain.
+    automatically. Pass ``sources=["gemini", "gpt-5.4"]`` to constrain.
     """
     s = get_settings()
     md_root = s.md_root
@@ -138,10 +138,10 @@ def build_default_evaluator(
         )
 
     md_readers = [MarkdownReader(name=name, root=md_root / name) for name in sources]
-    ocr_reader = AzureLayoutOCRReader(name="ocr")
+    di_reader = AzureDocIntelReader(name="di")
     verifier = VisionVerifierAgent() if enable_verifier and s.verify_singletons else None
     return Evaluator(
-        ocr_reader=ocr_reader,
+        di_reader=di_reader,
         markdown_readers=md_readers,
         verifier=verifier,
         max_cluster_distance=s.cluster_edit_distance,

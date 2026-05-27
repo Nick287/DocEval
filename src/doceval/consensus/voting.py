@@ -37,7 +37,7 @@ from doceval.core import (
 )
 
 
-def _pick_canonical_norm(cluster: Cluster, ocr_source: SourceName) -> str:
+def _pick_canonical_norm(cluster: Cluster, di_source: SourceName) -> str:
     """Vote on the canonical normalized form (one vote per source)."""
     # source → set of norms that source produced in this cluster
     by_source: dict[SourceName, set[str]] = {}
@@ -59,42 +59,42 @@ def _pick_canonical_norm(cluster: Cluster, ocr_source: SourceName) -> str:
         return contenders[0]
 
     # Tie break ----------------------------------------------------------------
-    ocr_norms = by_source.get(ocr_source, set())
+    di_norms = by_source.get(di_source, set())
     for n in contenders:
-        if n in ocr_norms:
+        if n in di_norms:
             return n
     contenders.sort(key=lambda n: (-len(n), n))
     return contenders[0]
 
 
 def _pick_canonical_surface(
-    cluster: Cluster, canonical_norm: str, ocr_source: SourceName
+    cluster: Cluster, canonical_norm: str, di_source: SourceName
 ) -> tuple[str, tuple[float, float, float, float] | None]:
-    """Pick the surface form to display and the bbox to draw, preferring OCR."""
-    ocr_candidates = [
-        h for h in cluster.members if h.source == ocr_source and h.norm == canonical_norm
+    """Pick the surface form to display and the bbox to draw, preferring DI."""
+    di_candidates = [
+        h for h in cluster.members if h.source == di_source and h.norm == canonical_norm
     ]
-    if ocr_candidates:
-        h = ocr_candidates[0]
+    if di_candidates:
+        h = di_candidates[0]
         return h.surface, h.bbox
 
     matching = [h for h in cluster.members if h.norm == canonical_norm]
     if matching:
         h = matching[0]
-        # bbox can still come from any OCR hit in the cluster (even with a
+        # bbox can still come from any DI hit in the cluster (even with a
         # different norm — e.g. typo case) — we'd rather show the wrong location
         # than no location.
-        ocr_any = next((m for m in cluster.members if m.source == ocr_source and m.bbox), None)
-        return h.surface, (ocr_any.bbox if ocr_any else h.bbox)
+        di_any = next((m for m in cluster.members if m.source == di_source and m.bbox), None)
+        return h.surface, (di_any.bbox if di_any else h.bbox)
 
     h = cluster.members[0]
     return h.surface, h.bbox
 
 
-def finalize_cluster(cluster: Cluster, *, ocr_source: SourceName = "ocr") -> Cluster:
+def finalize_cluster(cluster: Cluster, *, di_source: SourceName = "di") -> Cluster:
     """Populate ``canonical_norm``, ``canonical_surface`` and ``bbox`` in place."""
-    cluster.canonical_norm = _pick_canonical_norm(cluster, ocr_source)
-    surface, bbox = _pick_canonical_surface(cluster, cluster.canonical_norm, ocr_source)
+    cluster.canonical_norm = _pick_canonical_norm(cluster, di_source)
+    surface, bbox = _pick_canonical_surface(cluster, cluster.canonical_norm, di_source)
     cluster.canonical_surface = surface
     cluster.bbox = bbox
     return cluster
@@ -167,13 +167,13 @@ def vote(
     clusters: list[Cluster],
     all_sources: list[SourceName],
     *,
-    ocr_source: SourceName = "ocr",
+    di_source: SourceName = "di",
     cap: int = 2,
 ) -> tuple[list[Cluster], list[SourceJudgement]]:
     """Run :func:`finalize_cluster` then :func:`judge_cluster` over the list."""
     judgements: list[SourceJudgement] = []
     for c in clusters:
-        finalize_cluster(c, ocr_source=ocr_source)
+        finalize_cluster(c, di_source=di_source)
         judgements.extend(judge_cluster(c, all_sources, cap=cap))
     return clusters, judgements
 

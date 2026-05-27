@@ -1,9 +1,9 @@
 from doceval.sources.base import TokenReader, discover_stems
+from doceval.sources.doc_intel import AzureDocIntelReader
 from doceval.sources.markdown import MarkdownReader
-from doceval.sources.ocr import AzureLayoutOCRReader
 
 __all__ = [
-    "AzureLayoutOCRReader",
+    "AzureDocIntelReader",
     "MarkdownReader",
     "TokenReader",
     "discover_stems",

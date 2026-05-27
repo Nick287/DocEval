@@ -1,7 +1,7 @@
 """Read structured tokens from a markdown file.
 
 A ``MarkdownReader`` reads ``<root>/<source_name>/<stem>.md`` and emits
-``TokenHit`` objects tagged with the source name (e.g. ``"gemini"``, ``"gpt"``).
+``TokenHit`` objects tagged with the source name (e.g. ``"gemini"``, ``"gpt-5.4"``).
 Bounding boxes are always ``None`` because markdown carries no layout info.
 """
 from __future__ import annotations

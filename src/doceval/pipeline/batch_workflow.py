@@ -15,10 +15,10 @@ Graph::
 					 │
 					 ▼
 			  inspect_prereqs        ← per-stem check: image present?
-					 │               OCR cache present?  gpt MD present?
+					 │               DI cache present?  gpt MD present?
 					 │               (no network calls here)
 					 │
-					 ├── add_edge(condition=any_needs_ocr) ─────→ ensure_ocr ─┐
+					 ├── add_edge(condition=any_needs_di) ──────→ ensure_di  ─┐
 					 ├── add_edge(condition=any_needs_gpt) ─────→ ensure_gpt ─┤
 					 └── add_edge(condition=nothing_needed) ──────────────────┤
 																			  ▼
@@ -33,7 +33,7 @@ Graph::
 																			  ▼
 																	   BatchReport
 
-The two source-specific generators (``ensure_ocr`` / ``ensure_gpt``) sit on
+The two source-specific generators (``ensure_di`` / ``ensure_gpt``) sit on
 independent conditional edges from ``inspect_prereqs`` so they run in
 parallel whenever both prerequisites are missing. A third bypass edge fires
 only when nothing is missing. ``aggregate_preflight`` acts as an idempotent
@@ -56,8 +56,8 @@ from doceval.agents import VisionVerifierAgent
 from doceval.config import Settings, get_settings
 from doceval.core import ImageEvaluation
 from doceval.pipeline.workflow import build_pipeline_workflow
-from doceval.reporting import write_summary
-from doceval.sources import AzureLayoutOCRReader, MarkdownReader, discover_stems
+from doceval.reporting import SkippedEntry, write_summary
+from doceval.sources import AzureDocIntelReader, MarkdownReader, discover_stems
 from doceval.sources.gpt_md_generator import ensure_gpt_markdown
 
 log = logging.getLogger("doceval.batch")
@@ -126,7 +126,7 @@ class StemPrereq:
 
 	stem: str
 	image_path: Path | None
-	needs_ocr: bool
+	needs_di: bool
 	needs_gpt: bool
 	gemini_present: bool
 
@@ -171,7 +171,7 @@ class BatchResults:
 
 
 _PREFLIGHT_KEY = "preflight_plan"
-_OCR_RESULT_KEY = "preflight_ocr_result"
+_DI_RESULT_KEY = "preflight_di_result"
 _GPT_RESULT_KEY = "preflight_gpt_result"
 _EMITTED_KEY = "preflight_emitted"
 
@@ -195,20 +195,20 @@ def build_batch_workflow(
 
 		if request.sources:
 			md_sources = list(request.sources)
-		elif s.md_root.exists():
-			md_sources = sorted(p.name for p in s.md_root.iterdir() if p.is_dir())
 		else:
-			md_sources = []
-		# ``gpt`` is an implicit source: ``inspect_prereqs`` + ``ensure_gpt`` will
-		# always (re)generate ``MD/gpt/<stem>.md`` for every stem, regardless of
-		# whether MD/gpt/ already exists on disk. Make sure it's in the source
-		# list so the per-stem pipeline actually reads those files and the
-		# summary report includes ``gpt_*`` columns.
-		if "gpt" not in md_sources:
-			md_sources.append("gpt")
+			md_sources = s.list_md_sources()
+		# The active vision-LLM (``s.model_name``) is an implicit source:
+		# ``inspect_prereqs`` + ``ensure_gpt`` will always (re)generate
+		# ``MD/<model_name>/<stem>.md`` for every stem, regardless of whether
+		# that folder already exists on disk. Make sure it's in the source list
+		# so the per-stem pipeline actually reads those files and the summary
+		# report includes the corresponding columns.
+		gpt_name = s.model_name
+		if gpt_name not in md_sources:
+			md_sources.append(gpt_name)
 		# Ensure the directory exists so MarkdownReader.available_stems() in the
 		# stem-intersection step below doesn't crash on a missing folder.
-		(s.md_root / "gpt").mkdir(parents=True, exist_ok=True)
+		s.gpt_md_dir.mkdir(parents=True, exist_ok=True)
 		if not md_sources:
 			raise RuntimeError(f"no MD source folders found under {s.md_root}; nothing to do")
 
@@ -217,42 +217,47 @@ def build_batch_workflow(
 		else:
 			# Build readers only for sources that actually have files on disk —
 			# the stem intersection is meant to find stems present everywhere we
-			# can *currently* read. ``gpt`` may still be empty here (preflight
-			# will populate it), so exclude it from the intersection step.
-			intersect_sources = [n for n in md_sources if any((s.md_root / n).glob("*.md"))]
+			# can *currently* read. The active model dir is excluded even if it
+			# already contains some files (preflight + ensure_gpt will (re-)fill
+			# in the missing stems), so a half-populated MD/<model>/ folder
+			# can't silently shrink the batch.
+			intersect_sources = [
+				n for n in md_sources
+				if n != gpt_name and any((s.md_root / n).glob("*.md"))
+			]
 			readers = [
-				AzureLayoutOCRReader(name="ocr"),
+				AzureDocIntelReader(name="di"),
 				*[MarkdownReader(name=name, root=s.md_root / name) for name in intersect_sources],
 			]
 			stems = discover_stems(*readers)
 		if not stems:
 			raise RuntimeError("no stems shared across all sources; nothing to do")
 
-		plan = BatchPlan(stems=stems, md_sources=md_sources, all_sources=["ocr", *md_sources], concurrency=request.concurrency)
+		plan = BatchPlan(stems=stems, md_sources=md_sources, all_sources=["di", *md_sources], concurrency=request.concurrency)
 		log.info("batch · discover DONE  %d stem(s) × sources=%s", len(stems), plan.all_sources)
 		await ctx.send_message(plan)
 
 	@executor(id="inspect_prereqs")
 	async def inspect_prereqs(plan: BatchPlan, ctx: WorkflowContext[PreflightPlan]) -> None:
 		log.info("preflight · inspect_prereqs START  %d stem(s)", len(plan.stems))
-		ocr_reader_local = AzureLayoutOCRReader(name="ocr")
-		gpt_dir = s.md_root / "gpt"
+		di_reader_local = AzureDocIntelReader(name="di")
+		gpt_dir = s.gpt_md_dir
 		gemini_dir = s.md_root / "gemini"
-		cache_dir = s.ocr_cache_dir
+		cache_dir = s.di_cache_dir
 
 		tasks: list[StemPrereq] = []
 		no_image: list[SkippedStem] = []
 		for stem in plan.stems:
-			image_path = ocr_reader_local.find_image(stem)
+			image_path = di_reader_local.find_image(stem)
 			if image_path is None:
-				no_image.append(SkippedStem(stem=stem, stage="preflight", reason=f"no image for stem {stem!r} under {ocr_reader_local.image_dir}"))
+				no_image.append(SkippedStem(stem=stem, stage="preflight", reason=f"no image for stem {stem!r} under {di_reader_local.image_dir}"))
 				continue
-			has_ocr_cache = cache_dir.is_dir() and any(cache_dir.glob(f"{stem}.*.json"))
+			has_di_cache = cache_dir.is_dir() and any(cache_dir.glob(f"{stem}.*.json"))
 			tasks.append(
 				StemPrereq(
 					stem=stem,
 					image_path=image_path,
-					needs_ocr=not has_ocr_cache,
+					needs_di=not has_di_cache,
 					needs_gpt=not (gpt_dir / f"{stem}.md").exists(),
 					gemini_present=(gemini_dir / f"{stem}.md").exists(),
 				)
@@ -261,42 +266,42 @@ def build_batch_workflow(
 		pre = PreflightPlan(plan=plan, tasks=tasks, no_image=no_image)
 		ctx.set_state(_PREFLIGHT_KEY, pre)
 		log.info(
-			"preflight · inspect_prereqs DONE  no_image=%d need_ocr=%d need_gpt=%d gemini_missing=%d",
+			"preflight · inspect_prereqs DONE  no_image=%d need_di=%d need_gpt=%d gemini_missing=%d",
 			len(no_image),
-			sum(1 for t in tasks if t.needs_ocr),
+			sum(1 for t in tasks if t.needs_di),
 			sum(1 for t in tasks if t.needs_gpt),
 			sum(1 for t in tasks if not t.gemini_present),
 		)
 		await ctx.send_message(pre)
 
-	def any_needs_ocr(message: Any) -> bool:
-		return isinstance(message, PreflightPlan) and any(t.needs_ocr for t in message.tasks)
+	def any_needs_di(message: Any) -> bool:
+		return isinstance(message, PreflightPlan) and any(t.needs_di for t in message.tasks)
 
 	def any_needs_gpt(message: Any) -> bool:
 		return isinstance(message, PreflightPlan) and any(t.needs_gpt for t in message.tasks)
 
 	def nothing_needed(message: Any) -> bool:
-		return isinstance(message, PreflightPlan) and not any(t.needs_ocr for t in message.tasks) and not any(t.needs_gpt for t in message.tasks)
+		return isinstance(message, PreflightPlan) and not any(t.needs_di for t in message.tasks) and not any(t.needs_gpt for t in message.tasks)
 
-	@executor(id="ensure_ocr")
-	async def ensure_ocr(pre: PreflightPlan, ctx: WorkflowContext[PreflightPlan]) -> None:
-		reader = AzureLayoutOCRReader(name="ocr")
-		todo = [t for t in pre.tasks if t.needs_ocr and t.image_path is not None]
-		already = [t for t in pre.tasks if not t.needs_ocr]
-		log.info("step 3a · ensure_ocr START  %d to generate, %d already cached", len(todo), len(already))
+	@executor(id="ensure_di")
+	async def ensure_di(pre: PreflightPlan, ctx: WorkflowContext[PreflightPlan]) -> None:
+		reader = AzureDocIntelReader(name="di")
+		todo = [t for t in pre.tasks if t.needs_di and t.image_path is not None]
+		already = [t for t in pre.tasks if not t.needs_di]
+		log.info("step 3a · ensure_di START  %d to generate, %d already cached", len(todo), len(already))
 		sem = asyncio.Semaphore(pre.plan.concurrency)
 
 		async def _one(task: StemPrereq) -> tuple[str, SkippedStem | None]:
 			async with sem:
 				assert task.image_path is not None
 				try:
-					log.info("step 3a · ensure_ocr  %s  calling Doc Intel…", task.stem)
+					log.info("step 3a · ensure_di  %s  calling Doc Intel…", task.stem)
 					await asyncio.to_thread(reader.analyze, task.image_path)
-					log.info("step 3a · ensure_ocr  %s  OK", task.stem)
+					log.info("step 3a · ensure_di  %s  OK", task.stem)
 					return task.stem, None
 				except Exception as exc:  # noqa: BLE001
-					log.warning("step 3a · ensure_ocr  %s  FAIL: %s", task.stem, exc)
-					return task.stem, SkippedStem(stem=task.stem, stage="preflight", reason=f"Doc Intelligence OCR failed: {exc}")
+					log.warning("step 3a · ensure_di  %s  FAIL: %s", task.stem, exc)
+					return task.stem, SkippedStem(stem=task.stem, stage="preflight", reason=f"Doc Intelligence call failed: {exc}")
 
 		rows = await asyncio.gather(*[_one(t) for t in todo])
 		successes = [t.stem for t in already]
@@ -306,16 +311,17 @@ def build_batch_workflow(
 				successes.append(stem)
 			else:
 				failures.append(err)
-		log.info("step 3a · ensure_ocr DONE  ok=%d fail=%d", len(successes), len(failures))
-		ctx.set_state(_OCR_RESULT_KEY, PreflightSourceResult(source="ocr", successes=successes, failures=failures))
+		log.info("step 3a · ensure_di DONE  ok=%d fail=%d", len(successes), len(failures))
+		ctx.set_state(_DI_RESULT_KEY, PreflightSourceResult(source="di", successes=successes, failures=failures))
 		await ctx.send_message(pre)
 
 	@executor(id="ensure_gpt")
 	async def ensure_gpt(pre: PreflightPlan, ctx: WorkflowContext[PreflightPlan]) -> None:
-		gpt_dir = s.md_root / "gpt"
+		gpt_dir = s.gpt_md_dir
+		gpt_name = s.model_name
 		todo = [t for t in pre.tasks if t.needs_gpt and t.image_path is not None]
 		already = [t for t in pre.tasks if not t.needs_gpt]
-		log.info("step 3b · ensure_gpt START  %d to generate, %d already present", len(todo), len(already))
+		log.info("step 3b · ensure_gpt START  %d to generate, %d already present  (model=%s)", len(todo), len(already), gpt_name)
 		sem = asyncio.Semaphore(pre.plan.concurrency)
 
 		async def _one(task: StemPrereq) -> tuple[str, SkippedStem | None]:
@@ -323,7 +329,7 @@ def build_batch_workflow(
 				assert task.image_path is not None
 				out_path = gpt_dir / f"{task.stem}.md"
 				try:
-					log.info("step 3b · ensure_gpt  %s  calling Azure OpenAI…", task.stem)
+					log.info("step 3b · ensure_gpt  %s  calling vision LLM…", task.stem)
 					await ensure_gpt_markdown(task.image_path, out_path)
 					log.info("step 3b · ensure_gpt  %s  OK", task.stem)
 					return task.stem, None
@@ -340,7 +346,7 @@ def build_batch_workflow(
 			else:
 				failures.append(err)
 		log.info("step 3b · ensure_gpt DONE  ok=%d fail=%d", len(successes), len(failures))
-		ctx.set_state(_GPT_RESULT_KEY, PreflightSourceResult(source="gpt", successes=successes, failures=failures))
+		ctx.set_state(_GPT_RESULT_KEY, PreflightSourceResult(source=gpt_name, successes=successes, failures=failures))
 		await ctx.send_message(pre)
 
 	@executor(id="aggregate_preflight")
@@ -348,24 +354,24 @@ def build_batch_workflow(
 		if ctx.get_state(_EMITTED_KEY):
 			return
 
-		expect_ocr = any(t.needs_ocr for t in pre.tasks)
+		expect_di = any(t.needs_di for t in pre.tasks)
 		expect_gpt = any(t.needs_gpt for t in pre.tasks)
-		ocr_result: PreflightSourceResult | None = ctx.get_state(_OCR_RESULT_KEY)
+		di_result: PreflightSourceResult | None = ctx.get_state(_DI_RESULT_KEY)
 		gpt_result: PreflightSourceResult | None = ctx.get_state(_GPT_RESULT_KEY)
 
-		if expect_ocr and ocr_result is None:
-			log.info("step 4 · aggregate_preflight  waiting on OCR branch…")
+		if expect_di and di_result is None:
+			log.info("step 4 · aggregate_preflight  waiting on DI branch…")
 			return
 		if expect_gpt and gpt_result is None:
 			log.info("step 4 · aggregate_preflight  waiting on GPT branch…")
 			return
 
-		if ocr_result is None:
-			ocr_ok = {t.stem for t in pre.tasks}
-			ocr_failures: list[SkippedStem] = []
+		if di_result is None:
+			di_ok = {t.stem for t in pre.tasks}
+			di_failures: list[SkippedStem] = []
 		else:
-			ocr_ok = set(ocr_result.successes)
-			ocr_failures = list(ocr_result.failures)
+			di_ok = set(di_result.successes)
+			di_failures = list(di_result.failures)
 
 		if gpt_result is None:
 			gpt_ok = {t.stem for t in pre.tasks}
@@ -375,12 +381,12 @@ def build_batch_workflow(
 			gpt_failures = list(gpt_result.failures)
 
 		failures: dict[str, SkippedStem] = {}
-		for f in ocr_failures + gpt_failures:
+		for f in di_failures + gpt_failures:
 			failures.setdefault(f.stem, f)
 		for f in pre.no_image:
 			failures.setdefault(f.stem, f)
 
-		ready_set = (ocr_ok & gpt_ok) - set(failures.keys())
+		ready_set = (di_ok & gpt_ok) - set(failures.keys())
 		ready = [t.stem for t in pre.tasks if t.stem in ready_set]
 		skipped = list(failures.values())
 		gemini_missing = [t.stem for t in pre.tasks if t.stem in ready_set and not t.gemini_present]
@@ -430,8 +436,16 @@ def build_batch_workflow(
 		log.info("batch · summarize START  %d evaluation(s)  %d skipped", len(results.evaluations), len(results.skipped))
 		out_root = s.out_root
 		out_root.mkdir(parents=True, exist_ok=True)
-		if results.evaluations:
-			write_summary(results.evaluations, out_root, sources=results.plan.all_sources)
+		skipped_entries = [
+			SkippedEntry(stem=sk.stem, stage=sk.stage, reason=sk.reason)
+			for sk in results.skipped
+		]
+		write_summary(
+			results.evaluations,
+			out_root,
+			sources=results.plan.all_sources,
+			skipped=skipped_entries,
+		)
 
 		report = BatchReport(
 			stems=[ev.stem for ev in results.evaluations],
@@ -450,10 +464,10 @@ def build_batch_workflow(
 	return (
 		WorkflowBuilder(start_executor=discover)
 		.add_edge(discover, inspect_prereqs)
-		.add_edge(inspect_prereqs, ensure_ocr, condition=any_needs_ocr)
+		.add_edge(inspect_prereqs, ensure_di, condition=any_needs_di)
 		.add_edge(inspect_prereqs, ensure_gpt, condition=any_needs_gpt)
 		.add_edge(inspect_prereqs, aggregate_preflight, condition=nothing_needed)
-		.add_edge(ensure_ocr, aggregate_preflight)
+		.add_edge(ensure_di, aggregate_preflight)
 		.add_edge(ensure_gpt, aggregate_preflight)
 		.add_edge(aggregate_preflight, run_all)
 		.add_edge(run_all, summarize)

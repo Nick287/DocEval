@@ -2,22 +2,28 @@
 
 Ports the single-image conversion logic from ``annot_test/image_to_markdown.py``
 into the :mod:`doceval` package so the batch workflow can synthesize a
-missing ``MD/gpt/<stem>.md`` on demand.
+missing ``MD/<model_name>/<stem>.md`` on demand (e.g. ``MD/gpt-5.4/...``).
+
+The actual model call goes through :func:`doceval.agents.llm.vision_responses`
+so it transparently uses either Azure OpenAI or a GitHub Copilot subscription
+depending on ``DOCEVAL_MODEL_SOURCE``.
+
+Both the primary and 90°-rotated companion images are downscaled to
+``Settings.vision_max_dim`` on the long side and re-encoded as JPEG before
+being base64-d into the request — high-DPI scans easily push raw bytes past
+Copilot's request-body cap and trigger HTTP 413. On 413 we retry once with
+the long side halved.
 """
 from __future__ import annotations
 
 import asyncio
-import base64
 import io
 import logging
-from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
-from azure.identity import AzureCliCredential, get_bearer_token_provider
-from openai import AsyncAzureOpenAI
 from PIL import Image
 
+from doceval.agents.llm import VisionImage, vision_responses
 from doceval.config import get_settings
 
 log = logging.getLogger("doceval.gpt_md")
@@ -59,98 +65,107 @@ _USER_TEXT_WITH_ROTATED = (
 	"Do not transcribe Image 2 separately and do not output content twice. Produce a SINGLE Markdown extraction of the page as seen in Image 1, enriched with the vertical/rotated text revealed by Image 2."
 )
 
-_MEDIA_MAP = {
-	".jpg": "image/jpeg",
-	".jpeg": "image/jpeg",
-	".png": "image/png",
-	".gif": "image/gif",
-	".webp": "image/webp",
-}
+def _encode_view(
+	im: Image.Image,
+	*,
+	max_dim: int,
+	quality: int,
+) -> VisionImage:
+	"""Downscale (if needed) and JPEG-encode one image view."""
+	if im.mode not in ("RGB", "L"):
+		im = im.convert("RGB")
+	w, h = im.size
+	longest = max(w, h)
+	if longest > max_dim:
+		scale = max_dim / longest
+		im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+	buf = io.BytesIO()
+	im.save(buf, format="JPEG", quality=quality, optimize=True)
+	return VisionImage(media_type="image/jpeg", data=buf.getvalue())
 
 
-@lru_cache(maxsize=1)
-def _shared_credential() -> AzureCliCredential:
-	# Pin to the tenant that owns the Azure OpenAI resource — see
-	# :mod:`doceval.agents.client` for the full rationale.
-	return AzureCliCredential(tenant_id=get_settings().azure_tenant_id)
-
-
-@lru_cache(maxsize=1)
-def _async_client() -> AsyncAzureOpenAI:
-	s = get_settings()
-	token_provider = get_bearer_token_provider(
-		_shared_credential(),
-		"https://cognitiveservices.azure.com/.default",
-	)
-	return AsyncAzureOpenAI(
-		azure_ad_token_provider=token_provider,
-		api_version=s.azure_openai_api_version,
-		azure_endpoint=s.azure_openai_endpoint,
-	)
-
-
-def _media_type(image_path: Path) -> str:
-	return _MEDIA_MAP.get(image_path.suffix.lower(), "image/jpeg")
-
-
-def _image_to_base64(image_path: Path) -> str:
-	return base64.b64encode(image_path.read_bytes()).decode("utf-8")
-
-
-def _rotated_image_base64(image_path: Path) -> tuple[str, str]:
-	"""Return ``(media_type, base64)`` for a 90°-CW rotated companion view."""
+def _build_views(image_path: Path, *, max_dim: int, quality: int) -> tuple[VisionImage, VisionImage]:
+	"""Return ``(primary, rotated_90cw)`` views ready for vision_responses."""
 	with Image.open(image_path) as im:
-		rotated = im.rotate(-90, expand=True)
-		ext = image_path.suffix.lower()
-		if ext in (".jpg", ".jpeg"):
-			fmt, media = "JPEG", "image/jpeg"
-			if rotated.mode not in ("RGB", "L"):
-				rotated = rotated.convert("RGB")
-		else:
-			fmt, media = "PNG", "image/png"
-		buf = io.BytesIO()
-		save_kwargs: dict[str, Any] = {"quality": 92} if fmt == "JPEG" else {}
-		rotated.save(buf, format=fmt, **save_kwargs)
-		return media, base64.b64encode(buf.getvalue()).decode("utf-8")
+		im.load()  # detach from file handle so we can rotate after closing
+		primary = _encode_view(im, max_dim=max_dim, quality=quality)
+		rotated_pil = im.rotate(-90, expand=True)
+	rotated = _encode_view(rotated_pil, max_dim=max_dim, quality=quality)
+	return primary, rotated
+
+
+def _is_payload_too_large(exc: BaseException) -> bool:
+	msg = str(exc)
+	return "413" in msg or "too large" in msg.lower() or "payload" in msg.lower() and "size" in msg.lower()
 
 
 async def generate_gpt_markdown(image_path: Path) -> str:
-	"""Call Azure OpenAI to transcribe ``image_path`` to Markdown."""
+	"""Transcribe ``image_path`` to Markdown via the configured backend.
+
+	Automatically retries once with a smaller ``max_dim`` if the backend
+	rejects the request with HTTP 413 (payload too large).
+	"""
 	if not image_path.exists():
 		raise FileNotFoundError(image_path)
 
-	media_type = _media_type(image_path)
-	b64 = await asyncio.to_thread(_image_to_base64, image_path)
-	rot_media, rot_b64 = await asyncio.to_thread(_rotated_image_base64, image_path)
-
-	client = _async_client()
 	s = get_settings()
+	# Try the configured size first; if the server says 413, shrink and retry.
+	attempts: list[int] = [s.vision_max_dim, max(640, s.vision_max_dim // 2)]
+	if attempts[0] == attempts[1]:
+		attempts = attempts[:1]
 
-	log.info("gpt_md · request START  %s", image_path.name)
-	response = await client.responses.create(
-		model=s.azure_openai_deployment,
-		instructions=_SYSTEM_PROMPT,
-		input=[
-			{
-				"role": "user",
-				"content": [
-					{"type": "input_text", "text": _USER_TEXT_WITH_ROTATED},
-					{"type": "input_image", "image_url": f"data:{media_type};base64,{b64}"},
-					{"type": "input_image", "image_url": f"data:{rot_media};base64,{rot_b64}"},
-				],
-			},
-		],
-		max_output_tokens=16384,
-	)
-	content = response.output_text or ""
-	log.info("gpt_md · request DONE   %s  (%d chars)", image_path.name, len(content))
-	return content
+	last_exc: BaseException | None = None
+	for attempt_idx, max_dim in enumerate(attempts):
+		primary, rotated = await asyncio.to_thread(
+			_build_views,
+			image_path,
+			max_dim=max_dim,
+			quality=s.vision_jpeg_quality,
+		)
+		payload_kb = (len(primary.data) + len(rotated.data)) // 1024
+		log.info(
+			"gpt_md · request START  %s  max_dim=%d  payload=%dKB  attempt=%d",
+			image_path.name,
+			max_dim,
+			payload_kb,
+			attempt_idx + 1,
+		)
+		try:
+			result = await vision_responses(
+				instructions=_SYSTEM_PROMPT,
+				user_text=_USER_TEXT_WITH_ROTATED,
+				images=[primary, rotated],
+				max_output_tokens=16384,
+			)
+		except Exception as exc:
+			last_exc = exc
+			if _is_payload_too_large(exc) and attempt_idx + 1 < len(attempts):
+				log.warning(
+					"gpt_md · 413 payload-too-large at max_dim=%d (%dKB); retrying smaller",
+					max_dim,
+					payload_kb,
+				)
+				continue
+			raise
+		content = result.text
+		log.info(
+			"gpt_md · request DONE   %s  (%d chars, served=%s)",
+			image_path.name,
+			len(content),
+			result.served_model or "-",
+		)
+		return content
+
+	# Should be unreachable (loop either returns or re-raises), but keep
+	# mypy / pyright happy and make the failure mode explicit.
+	assert last_exc is not None
+	raise last_exc
 
 
 async def ensure_gpt_markdown(
 	image_path: Path, out_path: Path, *, overwrite: bool = False
 ) -> bool:
-	"""Write ``MD/gpt/<stem>.md`` if missing. Return True if a call was made."""
+	"""Write ``MD/<model_name>/<stem>.md`` if missing. Return True if a call was made."""
 	if out_path.exists() and not overwrite:
 		return False
 	content = await generate_gpt_markdown(image_path)

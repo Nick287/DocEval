@@ -1,8 +1,9 @@
-"""OCR reader powered by Azure Document Intelligence ``prebuilt-layout``.
+"""Document Intelligence (DI) reader.
 
-This module is structured so that the **expensive part (the network call)**
-is isolated behind a content-addressed file cache (``ocr_cache_dir``). The
-token extraction step that follows is pure and re-runs instantly.
+Powered by Azure Document Intelligence ``prebuilt-layout``. The expensive
+network call is isolated behind a content-addressed file cache
+(:attr:`doceval.config.Settings.di_cache_dir`, defaults to ``MD/di/``).
+The token extraction step that follows is pure and re-runs instantly.
 
 Hits emitted from here always carry a real pixel-accurate ``bbox``.
 """
@@ -77,13 +78,13 @@ def _word_indices_for_span(idx_map: list[int], start: int, end: int) -> list[int
 
 def extract_token_hits_from_words(
     words: list[dict],
-    source_name: str = "ocr",
+    source_name: str = "di",
 ) -> list[TokenHit]:
-    """Two-pass token extraction over OCR words.
+    """Two-pass token extraction over DI words.
 
     Pass 1 joins words with a single space (handles tokens contained in one
     word or across whitespace-separated cells).
-    Pass 2 joins with no separator (handles tokens that OCR fragmented into
+    Pass 2 joins with no separator (handles tokens that DI fragmented into
     multiple words, like credit-card groups).
     """
     if not words:
@@ -129,8 +130,8 @@ def extract_token_hits_from_words(
 # ---------------------------------------------------------------------------
 # Reader
 # ---------------------------------------------------------------------------
-class AzureLayoutOCRReader(TokenReader):
-    """OCR reader backed by Azure Document Intelligence prebuilt-layout.
+class AzureDocIntelReader(TokenReader):
+    """Reader backed by Azure Document Intelligence prebuilt-layout.
 
     Pure file caching keyed by ``(stem, SHA-256(image bytes)[:16])`` keeps
     repeat runs free.
@@ -138,7 +139,7 @@ class AzureLayoutOCRReader(TokenReader):
 
     def __init__(
         self,
-        name: str = "ocr",
+        name: str = "di",
         image_dir: Path | None = None,
         cache_dir: Path | None = None,
         client: DocumentIntelligenceClient | None = None,
@@ -146,7 +147,7 @@ class AzureLayoutOCRReader(TokenReader):
         super().__init__(name)
         s = get_settings()
         self.image_dir = Path(image_dir or s.image_dir)
-        self.cache_dir = Path(cache_dir or s.ocr_cache_dir)
+        self.cache_dir = Path(cache_dir or s.di_cache_dir)
         self._client = client
 
     # -- TokenReader API ---------------------------------------------------

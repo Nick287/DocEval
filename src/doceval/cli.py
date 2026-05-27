@@ -10,8 +10,8 @@ import typer
 from doceval.agents import VisionVerifierAgent
 from doceval.config import get_settings
 from doceval.pipeline import list_available_sources, run_workflow_many
-from doceval.reporting import write_summary
-from doceval.sources import AzureLayoutOCRReader, MarkdownReader, discover_stems
+from doceval.reporting import SkippedEntry, write_summary
+from doceval.sources import AzureDocIntelReader, MarkdownReader, discover_stems
 
 app = typer.Typer(add_completion=False, help="DocEval MD verification — consensus pipeline.")
 log = logging.getLogger("doceval")
@@ -46,7 +46,7 @@ def run(
         typer.echo("no MD source folders found under MD/; nothing to do.", err=True)
         raise typer.Exit(code=1)
 
-    all_sources: list[str] = ["ocr", *md_sources]
+    all_sources: list[str] = ["di", *md_sources]
     verifier = (
         None
         if no_verify or not settings.verify_singletons
@@ -55,13 +55,12 @@ def run(
 
     # Stem discovery still uses the lightweight reader helpers — we just need
     # to know which stems exist on disk before we kick off the workflow.
-    readers = [
-        AzureLayoutOCRReader(name="ocr"),
-        *[
-            MarkdownReader(name=name, root=settings.md_root / name)
-            for name in md_sources
-        ],
-    ]
+    di_reader = AzureDocIntelReader(name="di")
+    md_reader_map = {
+        name: MarkdownReader(name=name, root=settings.md_root / name)
+        for name in md_sources
+    }
+    readers = [di_reader, *md_reader_map.values()]
     if stem:
         stems = list(stem)
     else:
@@ -69,6 +68,39 @@ def run(
         if not stems:
             typer.echo("no stems shared across all sources; nothing to do.", err=True)
             raise typer.Exit(code=1)
+
+    # Surface any stems that exist on disk somewhere but aren't shared across
+    # all sources, so the user understands why the run count < image count.
+    dropped_entries: list[SkippedEntry] = []
+    if not stem:
+        image_stems = di_reader.available_stems()
+        union_stems = set(image_stems)
+        for r in md_reader_map.values():
+            union_stems |= r.available_stems()
+        dropped = sorted(union_stems - set(stems))
+        if dropped:
+            per_source_missing: dict[str, list[str]] = {}
+            for d in dropped:
+                missing_in: list[str] = []
+                if d not in image_stems:
+                    missing_in.append("image")
+                for name, r in md_reader_map.items():
+                    if d not in r.available_stems():
+                        missing_in.append(name)
+                per_source_missing[d] = missing_in
+            typer.echo(
+                f"⚠️  skipping {len(dropped)} stem(s) not present in every source:",
+                err=True,
+            )
+            for d, srcs in per_source_missing.items():
+                typer.echo(f"     - {d}  (missing in: {', '.join(srcs)})", err=True)
+                dropped_entries.append(
+                    SkippedEntry(
+                        stem=d,
+                        stage="discovery",
+                        reason=f"缺少源: {', '.join(srcs)}",
+                    )
+                )
 
     typer.echo(
         f"found {len(stems)} stem(s); sources={all_sources}; "
@@ -91,20 +123,20 @@ def run(
                 f"  [{ev.stem}] {ev.elapsed_seconds:.1f}s — "
                 f"clusters={len(ev.clusters)} verifier_model={ev.verifier_model or '-'}"
             )
-        write_summary(evaluations, out_root, sources=all_sources)
+        write_summary(evaluations, out_root, sources=all_sources, skipped=dropped_entries)
         typer.echo(f"summary → {out_root / 'summary.md'}")
 
     asyncio.run(_go())
 
 
 @app.command()
-def ocr(
+def di(
     stem: str = typer.Argument(..., help="Image stem (without extension)."),
 ) -> None:
-    """Run OCR for one image and dump tokens it found (no LLM)."""
-    from doceval.sources import AzureLayoutOCRReader
+    """Run Document Intelligence for one image and dump tokens it found (no LLM)."""
+    from doceval.sources import AzureDocIntelReader
 
-    reader = AzureLayoutOCRReader()
+    reader = AzureDocIntelReader()
     hits = reader.read(stem)
     typer.echo(f"{len(hits)} structured tokens:")
     for h in hits:

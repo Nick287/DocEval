@@ -10,9 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_framework import Agent, Content, Message
-
-from doceval.agents.client import build_chat_client
+from doceval.agents.llm import VisionImage, vision_responses
 from doceval.config import get_settings
 
 
@@ -40,31 +38,27 @@ _INSTRUCTIONS = (
 )
 
 
-def _image_content(image_path: Path) -> Content:
+def _vision_image(image_path: Path) -> VisionImage:
     suffix = image_path.suffix.lower()
     media = _MEDIA.get(suffix, "image/jpeg")
-    return Content.from_data(image_path.read_bytes(), media_type=media)
+    return VisionImage(media_type=media, data=image_path.read_bytes())
 
 
 class VisionVerifierAgent:
-    """Thin wrapper around an :class:`agent_framework.Agent`.
+    """Thin wrapper around :func:`doceval.agents.llm.vision_responses`.
 
     Exposes a single async method :meth:`verify` that maps a list of token
     surfaces to the agent's verdict for each. After each call,
     :attr:`last_model` carries the model string the service actually used
     (e.g. ``gpt-5.4-2025-09-xx``) — useful for auditing what version produced
-    a given report. ``configured_model`` is the deployment alias requested at
-    construction time.
+    a given report. ``configured_model`` is the deployment / model id
+    requested at construction time.
     """
 
-    def __init__(self, agent: Agent | None = None) -> None:
+    def __init__(self) -> None:
         s = get_settings()
-        self._agent = agent or Agent(
-            client=build_chat_client(),
-            name="doceval-vision-verifier",
-            instructions=_INSTRUCTIONS,
-        )
-        self.configured_model: str = s.azure_openai_deployment
+        self.model_source: str = s.model_source
+        self.configured_model: str = s.effective_verifier_model
         self.last_model: str | None = None
 
     async def verify(
@@ -87,45 +81,16 @@ class VisionVerifierAgent:
             + "\n\nReturn the verdict JSON now."
         )
 
-        message = Message(
-            role="user",
-            contents=[Content.from_text(user_text), _image_content(image_path)],
+        result = await vision_responses(
+            instructions=_INSTRUCTIONS,
+            user_text=user_text,
+            images=[_vision_image(image_path)],
+            model=self.configured_model,
         )
-
-        response = await self._agent.run(message)
-        self.last_model = self._extract_served_model(response) or self.last_model
-        raw_text = self._extract_text(response)
-        return self._parse(raw_text)
+        self.last_model = result.served_model or self.last_model
+        return self._parse(result.text)
 
     # ------------------------------------------------------------------
-    @staticmethod
-    def _extract_served_model(response: object) -> str | None:
-        """The agent framework stores the underlying ``ChatResponse`` on
-        ``raw_representation``. Its ``model`` attribute is populated from the
-        ``x-ms-served-model`` Azure response header (e.g. ``gpt-5.4-2025-...``).
-        """
-        raw = getattr(response, "raw_representation", None)
-        for candidate in (raw, response):
-            model = getattr(candidate, "model", None)
-            if isinstance(model, str) and model:
-                return model
-        return None
-
-    @staticmethod
-    def _extract_text(response: object) -> str:
-        """Pull the assistant's text out of an :class:`AgentResponse`."""
-        text = getattr(response, "text", None)
-        if isinstance(text, str) and text:
-            return text
-        messages = getattr(response, "messages", None) or []
-        chunks: list[str] = []
-        for msg in messages:
-            for c in getattr(msg, "contents", []) or []:
-                t = getattr(c, "text", None)
-                if isinstance(t, str):
-                    chunks.append(t)
-        return "".join(chunks)
-
     @staticmethod
     def _parse(text: str) -> dict[str, dict[str, str]]:
         text = text.strip()

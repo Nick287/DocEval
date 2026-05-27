@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 
 from doceval.core import ImageEvaluation, Verdict
@@ -16,6 +17,15 @@ _VERDICT_ZH = {
 }
 
 
+@dataclass
+class SkippedEntry:
+    """One stem that was attempted but didn't make it into ``evaluations``."""
+
+    stem: str
+    stage: str  # 'preflight' | 'run_all' | 'discovery'
+    reason: str
+
+
 def _stats_for(evaluation: ImageEvaluation, source: str) -> dict[str, int]:
     out = {v: 0 for v in _VERDICTS}
     for j in evaluation.judgements:
@@ -28,9 +38,17 @@ def write_summary(
     evaluations: list[ImageEvaluation],
     out_dir: Path,
     sources: list[str],
+    *,
+    skipped: list[SkippedEntry] | None = None,
 ) -> None:
-    """Write summary.csv + summary.md aggregating ``evaluations``."""
+    """Write summary.csv + summary.md aggregating ``evaluations``.
+
+    ``skipped`` lists stems that were known but excluded from the run
+    (preflight failures, dropped due to missing sources, etc.) and is
+    rendered as a dedicated section so the user can reconcile counts.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
+    skipped = list(skipped or [])
 
     rows: list[dict] = []
     for ev in evaluations:
@@ -46,6 +64,23 @@ def write_summary(
         rows.append(row)
 
     if not rows:
+        if not skipped:
+            return
+        # Even without evaluations, still write a summary that surfaces the
+        # skipped stems so the user has something to inspect.
+        md_lines: list[str] = [
+            "# 共识评估总结",
+            "",
+            "⚠️ 本次运行未产生任何评估结果。",
+            "",
+            "## 跳过/失败的图像",
+            "",
+            "| stem | 阶段 | 原因 |",
+            "|---|---|---|",
+            *[f"| {sk.stem} | {sk.stage} | {sk.reason} |" for sk in skipped],
+            "",
+        ]
+        (out_dir / "summary.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
         return
 
     # CSV
@@ -117,5 +152,12 @@ def write_summary(
     md_lines.append("\n## 每张图详细报告\n")
     for ev in evaluations:
         md_lines.append(f"- **{ev.stem}** — [report.md]({ev.stem}/report.md)")
+
+    if skipped:
+        md_lines.append("\n## 跳过/失败的图像\n")
+        md_lines.append("| stem | 阶段 | 原因 |")
+        md_lines.append("|---|---|---|")
+        for sk in skipped:
+            md_lines.append(f"| {sk.stem} | {sk.stage} | {sk.reason} |")
 
     (out_dir / "summary.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
