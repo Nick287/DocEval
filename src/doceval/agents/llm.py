@@ -103,6 +103,18 @@ async def _copilot_vision_call(
     max_output_tokens: int | None,
     model: str,
 ) -> VisionResult:
+    # Claude models on Copilot don't support /responses ("unsupported_api_for_model");
+    # route them to /chat/completions instead. Other families (gpt-5.x, gemini) keep
+    # the Responses API path.
+    if model.startswith("claude"):
+        return await _copilot_chat_vision_call(
+            instructions=instructions,
+            user_text=user_text,
+            images=images,
+            max_output_tokens=max_output_tokens,
+            model=model,
+        )
+
     content: list[dict[str, Any]] = [{"type": "input_text", "text": user_text}]
     for img in images:
         content.append({"type": "input_image", "image_url": img.to_data_url()})
@@ -117,6 +129,36 @@ async def _copilot_vision_call(
 
     data = await copilot.responses_call(payload)
     text = copilot.extract_response_text(data)
+    served = copilot.extract_served_model(data) or model
+    return VisionResult(text=text, served_model=served)
+
+
+async def _copilot_chat_vision_call(
+    *,
+    instructions: str,
+    user_text: str,
+    images: list[VisionImage],
+    max_output_tokens: int | None,
+    model: str,
+) -> VisionResult:
+    user_content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+    for img in images:
+        user_content.append(
+            {"type": "image_url", "image_url": {"url": img.to_data_url()}}
+        )
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": user_content},
+        ],
+    }
+    if max_output_tokens is not None:
+        payload["max_tokens"] = max_output_tokens
+
+    data = await copilot.chat_completions_call(payload)
+    text = copilot.extract_chat_text(data)
     served = copilot.extract_served_model(data) or model
     return VisionResult(text=text, served_model=served)
 

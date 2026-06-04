@@ -238,6 +238,47 @@ async def responses_call(payload: dict[str, Any]) -> dict[str, Any]:
     return r.json()
 
 
+async def chat_completions_call(payload: dict[str, Any]) -> dict[str, Any]:
+    """POST ``payload`` to ``{endpoint}/chat/completions`` and return parsed JSON.
+
+    Used for models that don't support the ``/responses`` API (notably the
+    ``claude-…`` family on Copilot, which returns
+    ``unsupported_api_for_model`` from ``/responses``).
+    """
+    token, endpoint = await get_api_token_async()
+    r = await _client().post(
+        f"{endpoint}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            **EDITOR_HEADERS,
+        },
+        json=payload,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"copilot /chat/completions {r.status_code}: {r.text}")
+    return r.json()
+
+
+def extract_chat_text(data: dict[str, Any]) -> str:
+    """Pull plain text out of a Copilot ``/chat/completions`` JSON payload."""
+    choices = data.get("choices") or []
+    if not choices:
+        return ""
+    msg = choices[0].get("message") or {}
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    # Some providers (Claude) may stream back a list of content parts.
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in ("text", "output_text"):
+                chunks.append(part.get("text", ""))
+        return "".join(chunks)
+    return ""
+
+
 def extract_response_text(data: dict[str, Any]) -> str:
     """Pull plain text out of a Copilot ``/responses`` JSON payload."""
     if isinstance(data.get("output_text"), str) and data["output_text"]:
