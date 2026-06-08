@@ -97,6 +97,13 @@ class Settings(BaseSettings):
     vision_jpeg_quality: int = 85
     """JPEG quality for images sent to vision models (1–95)."""
 
+    gpt_grounding: bool = True
+    """Inject high-confidence Azure DI OCR tokens (long numbers / IDs / dates)
+    as reference anchors into the GPT markdown-generation prompt. This is a
+    pure cache read — it never triggers a Document Intelligence network call,
+    and degrades gracefully (no anchors) when the DI cache for a stem is not
+    yet present. Set to False to reproduce the no-grounding baseline."""
+
     @property
     def image_dir(self) -> Path:
         return self.data_root / "image" / "source"

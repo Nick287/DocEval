@@ -7,6 +7,9 @@
 *.pem
 *.pfx
 
+
+.claude/
+
 # --- Raw input data (NOT tracked) -------------------------------------------
 # Source images / per-source markdown / OCR caches are user-provided
 # datasets — keep them out of git.

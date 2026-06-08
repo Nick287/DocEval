@@ -25,6 +25,8 @@ from PIL import Image
 
 from doceval.agents.llm import VisionImage, vision_responses
 from doceval.config import get_settings
+from doceval.core import iter_token_matches, normalize
+from doceval.sources.doc_intel import AzureDocIntelReader
 
 log = logging.getLogger("doceval.gpt_md")
 
@@ -53,9 +55,11 @@ _SYSTEM_PROMPT = (
 	"graphical elements, insert an inline tag in the form `<figure>short description, including any visible text or state</figure>` "
 	"at the position where the element appears. For checkboxes, indicate the state, e.g. `<figure>checkbox: checked</figure>` or "
 	"`<figure>checkbox: unchecked</figure>`.\n"
-	"7. Illegible content: If a character or value is unreadable, use `[illegible]` in its place. Never invent or guess missing content.\n"
-	"8. Noise filtering: Ignore purely decorative page borders, background watermarks, and scanner artifacts that carry no information.\n"
-	"9. Output format: Return pure Markdown body content only. Do not include any preface, explanation, closing remarks, or code fences such as ```markdown."
+	"7. Illegible content: If a character or value is blurry, faded, or low-resolution but NOT deliberately hidden, use `[illegible]` in its place. Never invent or guess missing content.\n"
+	"8. Masked / redacted content: If part of a value is covered by a mosaic, black bar, sticker, or any deliberate occlusion, write the placeholder `【mosaic】` at that exact spot and transcribe only the characters that remain clearly visible around it (e.g. a partly masked number becomes `5655【mosaic】0255`). NEVER guess, reconstruct, or fill in the hidden digits/characters — masked content is the single biggest source of fabricated values.\n"
+	"9. Continuous identifiers: Transcribe account numbers, card numbers, document/order/tracking IDs, and other long digit runs EXACTLY as one continuous string, preserving only the separators (spaces, dashes) that are actually printed in the image. Do NOT insert spaces, dashes, or grouping of your own into a number that is printed as a single unbroken run of digits.\n"
+	"10. Noise filtering: Ignore purely decorative page borders, background watermarks, and scanner artifacts that carry no information.\n"
+	"11. Output format: Return pure Markdown body content only. Do not include any preface, explanation, closing remarks, or code fences such as ```markdown."
 )
 
 _USER_TEXT_WITH_ROTATED = (
@@ -64,6 +68,84 @@ _USER_TEXT_WITH_ROTATED = (
 	"  - Image 2: the same page ROTATED 90° clockwise. Use it ONLY to read text that is printed vertically / sideways in the original (margin stamps, document IDs, tracking numbers along the edge, vertical watermarks, rotated cell labels in tables). Any extra text that becomes readable in Image 2 MUST also appear in your Markdown output, inserted at the position where it occurs in Image 1.\n\n"
 	"Do not transcribe Image 2 separately and do not output content twice. Produce a SINGLE Markdown extraction of the page as seen in Image 1, enriched with the vertical/rotated text revealed by Image 2."
 )
+
+
+# --------------------------------------------------------------------------- #
+# DI OCR grounding (optional reference anchors)
+# --------------------------------------------------------------------------- #
+def collect_di_anchors(image_path: Path, *, limit: int = 40) -> list[str]:
+	"""Read cached Azure DI layout for ``image_path`` and return reference tokens.
+
+	Pure cache read — never triggers a Document Intelligence network call. Returns
+	the de-duplicated surface forms of the structured tokens (long numbers, IDs,
+	dates, currency) DI saw, ordered by descending OCR confidence so the most
+	reliable anchors come first. Returns ``[]`` when no DI cache exists for the
+	stem, so callers degrade gracefully.
+	"""
+	reader = AzureDocIntelReader(name="di")
+	cache_path = reader._cache_path(image_path)
+	if not cache_path.exists():
+		return []
+	try:
+		import json
+
+		data = json.loads(cache_path.read_text(encoding="utf-8"))
+	except (OSError, ValueError):
+		return []
+
+	words = data.get("words") or []
+	if not words:
+		return []
+
+	# Join DI words with spaces and find structured tokens, tracking the min
+	# word-confidence backing each surface so we can rank anchors.
+	parts: list[str] = []
+	spans: list[tuple[int, int, float]] = []  # (start, end, confidence) per word
+	cursor = 0
+	for i, w in enumerate(words):
+		text = str(w.get("text", ""))
+		if i > 0:
+			parts.append(" ")
+			cursor += 1
+		start = cursor
+		parts.append(text)
+		cursor += len(text)
+		spans.append((start, cursor, float(w.get("confidence", 1.0) or 0.0)))
+	joined = "".join(parts)
+
+	def _conf_for_span(s: int, e: int) -> float:
+		confs = [c for (ws, we, c) in spans if ws < e and we > s]
+		return min(confs) if confs else 0.0
+
+	best: dict[str, float] = {}
+	for m in iter_token_matches(joined, relaxed=False):
+		surface = m.surface.strip()
+		if not normalize(surface):
+			continue
+		conf = _conf_for_span(*m.span)
+		if surface not in best or conf > best[surface]:
+			best[surface] = conf
+
+	ranked = sorted(best.items(), key=lambda kv: (-kv[1], kv[0]))
+	return [surface for surface, _ in ranked[:limit]]
+
+
+def _grounding_text(anchors: list[str]) -> str:
+	"""Render the DI anchor reference block appended to the user prompt."""
+	if not anchors:
+		return ""
+	import json
+
+	return (
+		"\n\nReference hints (FYI only): an OCR engine independently detected the "
+		"following structured strings (numbers, IDs, dates) somewhere on this page. "
+		"They may contain OCR errors and are NOT guaranteed complete or correct — "
+		"trust your own reading of the image first, but use this list to avoid "
+		"missing or misreading long digit runs, and to recover the exact contiguous "
+		"form of account/card/ID numbers:\n"
+		+ json.dumps(anchors, ensure_ascii=False)
+	)
+
 
 def _encode_view(
 	im: Image.Image,
@@ -109,6 +191,15 @@ async def generate_gpt_markdown(image_path: Path) -> str:
 		raise FileNotFoundError(image_path)
 
 	s = get_settings()
+	# Optional DI OCR grounding — pure cache read, no network call. Anchors are
+	# appended to the user turn to help recover exact long-number forms.
+	user_text = _USER_TEXT_WITH_ROTATED
+	if s.gpt_grounding:
+		anchors = await asyncio.to_thread(collect_di_anchors, image_path)
+		if anchors:
+			user_text += _grounding_text(anchors)
+			log.info("gpt_md · grounding  %s  %d DI anchor(s)", image_path.name, len(anchors))
+
 	# Try the configured size first; if the server says 413, shrink and retry.
 	attempts: list[int] = [s.vision_max_dim, max(640, s.vision_max_dim // 2)]
 	if attempts[0] == attempts[1]:
@@ -133,7 +224,7 @@ async def generate_gpt_markdown(image_path: Path) -> str:
 		try:
 			result = await vision_responses(
 				instructions=_SYSTEM_PROMPT,
-				user_text=_USER_TEXT_WITH_ROTATED,
+				user_text=user_text,
 				images=[primary, rotated],
 				max_output_tokens=16384,
 			)
